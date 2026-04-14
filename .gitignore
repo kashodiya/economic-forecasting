@@ -1,0 +1,31 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# SSH keys
+*.pem
+*.key
+
+# Notes (local only)
+/notes/
+
+# Backend config (may contain bucket/region info)
+backend.hcl
+
+# Lambda zip artifacts
+*.zip
+
+# Deploy scripts with hardcoded IPs
+**/deploy.bat
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

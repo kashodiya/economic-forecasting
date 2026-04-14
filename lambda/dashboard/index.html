@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Economic Forecasting Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@3/dist/vuetify.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7/css/materialdesignicons.min.css" rel="stylesheet" />
+  <style>[v-cloak]{display:none}</style>
+</head>
+<body>
+<div id="app" v-cloak>
+  <v-app theme="dark">
+    <v-app-bar flat>
+      <v-app-bar-title>Economic Forecasting</v-app-bar-title>
+    </v-app-bar>
+
+    <v-main>
+      <router-view></router-view>
+    </v-main>
+
+    <v-bottom-navigation grow>
+      <v-btn to="/ec2">
+        <v-icon>mdi-monitor-dashboard</v-icon>
+        <span>EC2</span>
+      </v-btn>
+      <v-btn to="/">
+        <v-icon>mdi-link-variant</v-icon>
+        <span>Apps</span>
+      </v-btn>
+    </v-bottom-navigation>
+  </v-app>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue-router@4/dist/vue-router.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vuetify@3/dist/vuetify.min.js"></script>
+<script>
+const { createApp, ref, onMounted, computed } = Vue
+
+// --- Dashboard Page ---
+const DashboardPage = {
+  setup() {
+    const state = ref('unknown')
+    const publicIp = ref(null)
+    const instanceType = ref('')
+    const loading = ref(false)
+    const polling = ref(null)
+
+    const showStopConfirm = ref(false)
+
+    const stateColor = computed(() => ({
+      running: 'success', stopped: 'error', pending: 'warning',
+      'shutting-down': 'warning', stopping: 'warning',
+    }[state.value] || 'grey'))
+
+    function confirmStop() { showStopConfirm.value = true }
+    function cancelStop() { showStopConfirm.value = false }
+    function doStop() { showStopConfirm.value = false; doAction('stop') }
+
+    async function fetchStatus() {
+      try {
+        const r = await fetch('/api/ec2/status')
+        const d = await r.json()
+        state.value = d.state
+        publicIp.value = d.publicIp
+        instanceType.value = d.instanceType
+      } catch(e) { console.error(e) }
+    }
+
+    async function doAction(action) {
+      loading.value = true
+      try {
+        await fetch('/api/ec2/' + action, { method: 'POST' })
+        // Poll until stable
+        polling.value = setInterval(async () => {
+          await fetchStatus()
+          if (state.value === 'running' || state.value === 'stopped') {
+            clearInterval(polling.value)
+            loading.value = false
+          }
+        }, 3000)
+      } catch(e) { loading.value = false }
+    }
+
+    onMounted(fetchStatus)
+    return { state, publicIp, instanceType, stateColor, loading, doAction, fetchStatus, showStopConfirm, confirmStop, cancelStop, doStop }
+  },
+  template: `
+    <v-container>
+      <v-row justify="center">
+        <v-col cols="12" md="8" lg="6">
+          <v-card class="mb-4">
+            <v-card-title class="d-flex align-center">
+              <v-icon class="mr-2">mdi-server</v-icon>
+              EC2 Instance
+              <v-spacer></v-spacer>
+              <v-chip :color="stateColor" variant="flat" size="small">{{ state }}</v-chip>
+            </v-card-title>
+            <v-card-text>
+              <div v-if="instanceType" class="text-body-2 mb-1">Type: {{ instanceType }}</div>
+              <div v-if="publicIp" class="text-body-2">IP: {{ publicIp }}</div>
+              <div v-else class="text-body-2 text-grey">No public IP (instance may be stopped)</div>
+            </v-card-text>
+            <v-card-actions>
+              <v-btn color="success" variant="flat" :loading="loading" :disabled="state==='running'||loading" @click="doAction('start')">
+                <v-icon left>mdi-play</v-icon> Start
+              </v-btn>
+              <v-btn color="error" variant="flat" :loading="loading" :disabled="state==='stopped'||loading" @click="confirmStop">
+                <v-icon left>mdi-stop</v-icon> Stop
+              </v-btn>
+              <v-spacer></v-spacer>
+              <v-btn variant="text" @click="fetchStatus" :disabled="loading">
+                <v-icon>mdi-refresh</v-icon>
+              </v-btn>
+            </v-card-actions>
+          </v-card>
+
+          <v-dialog v-model="showStopConfirm" max-width="400">
+            <v-card>
+              <v-card-title>Stop EC2 Instance?</v-card-title>
+              <v-card-text>Are you sure you want to stop the instance? Any unsaved work on the EC2 may be affected.</v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn variant="text" @click="cancelStop">Cancel</v-btn>
+                <v-btn color="error" variant="flat" @click="doStop">Stop</v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+        </v-col>
+      </v-row>
+    </v-container>`
+}
+
+// --- Links Page ---
+const LinksPage = {
+  setup() {
+    const apps = ref([])
+    const publicIp = ref(null)
+    onMounted(async () => {
+      try {
+        const [appsRes, statusRes] = await Promise.all([
+          fetch('/api/apps'),
+          fetch('/api/ec2/status')
+        ])
+        apps.value = await appsRes.json()
+        const d = await statusRes.json()
+        publicIp.value = d.publicIp
+      } catch(e) { console.error(e) }
+    })
+    function appUrl(port) {
+      return publicIp.value ? 'http://' + publicIp.value + ':' + port : '#'
+    }
+    return { apps, publicIp, appUrl }
+  },
+  template: `
+    <v-container>
+      <v-row justify="center">
+        <v-col cols="12" md="8" lg="6">
+          <v-alert v-if="!publicIp" type="warning" variant="tonal" class="mb-4">
+            EC2 is not running or has no public IP. Start it from the Dashboard.
+          </v-alert>
+          <v-card v-for="app in apps" :key="app.name" class="mb-3">
+            <v-card-title class="d-flex align-center">
+              <v-icon :color="app.color" class="mr-2">{{ app.icon }}</v-icon>
+              {{ app.name }}
+              <v-spacer></v-spacer>
+              <v-chip size="small" variant="outlined">:{{ app.port }}</v-chip>
+            </v-card-title>
+            <v-card-actions>
+              <v-btn :href="appUrl(app.port)" target="_blank" :disabled="!publicIp" color="primary" variant="flat">
+                <v-icon left>mdi-open-in-new</v-icon> Open
+              </v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-col>
+      </v-row>
+    </v-container>`
+}
+
+// --- Router & App ---
+const router = VueRouter.createRouter({
+  history: VueRouter.createWebHashHistory(),
+  routes: [
+    { path: '/', component: LinksPage },
+    { path: '/ec2', component: DashboardPage },
+  ]
+})
+
+const app = createApp({})
+app.use(router)
+app.use(Vuetify.createVuetify({ theme: { defaultTheme: 'dark' } }))
+app.mount('#app')
+</script>
+</body>
+</html>

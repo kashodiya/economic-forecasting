@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eco4</title>
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@3.7.6/dist/vuetify.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <v-app>
+      <v-app-bar color="primary" dark>
+        <v-app-bar-title>eco4</v-app-bar-title>
+        <v-spacer></v-spacer>
+        <v-btn variant="text" @click="$router.push('/')">Home</v-btn>
+        <v-btn variant="text" @click="$router.push('/about')">About</v-btn>
+      </v-app-bar>
+
+      <v-main>
+        <v-container>
+          <router-view></router-view>
+        </v-container>
+      </v-main>
+    </v-app>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vue-router@4.5.0/dist/vue-router.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@3.7.6/dist/vuetify.min.js"></script>
+
+  <script>
+    const { createApp, ref } = Vue
+
+    const Home = {
+      template: `
+        <div>
+          <v-card class="mt-4">
+            <v-card-title>Welcome to eco4</v-card-title>
+            <v-card-text>Economic forecasting dashboard.</v-card-text>
+          </v-card>
+        </div>
+      `
+    }
+
+    const About = {
+      template: `
+        <div>
+          <v-card class="mt-4">
+            <v-card-title>About</v-card-title>
+            <v-card-text>eco4 — a hackathon project for economic forecasting.</v-card-text>
+          </v-card>
+        </div>
+      `
+    }
+
+    const routes = [
+      { path: '/', component: Home },
+      { path: '/about', component: About },
+    ]
+
+    const router = VueRouter.createRouter({
+      history: VueRouter.createWebHistory(),
+      routes,
+    })
+
+    const vuetify = Vuetify.createVuetify()
+
+    const app = createApp({})
+    app.use(router)
+    app.use(vuetify)
+    app.mount('#app')
+  </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+[
+  { "name": "code-server", "port": 8443, "icon": "mdi-microsoft-visual-studio-code", "color": "blue" },
+  { "name": "JupyterLab", "port": 8888, "icon": "mdi-notebook", "color": "orange" },
+  { "name": "eco4", "port": 8000, "icon": "mdi-chart-line", "color": "green" }
+]
