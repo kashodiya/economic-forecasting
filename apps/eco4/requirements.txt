@@ -6,3 +6,4 @@ statsmodels
 httpx
 boto3
 prophet
+python-dotenv
