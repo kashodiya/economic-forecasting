@@ -1,240 +1,92 @@
-# Economic Indicator Forecasting Dashboard  
-## High‑Level Summary + Technical Architecture (Claude Opus 4.6 + Local Processing)
+# eco4 — Economic Indicator Forecasting Dashboard
 
----
+Interactive dashboard for analyzing and forecasting U.S. macroeconomic indicators using multiple statistical models, with AI-powered explanations via Amazon Bedrock.
 
-## 1. Executive Summary
+![Python](https://img.shields.io/badge/Python-3.9+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-The **Economic Indicator Forecasting Dashboard** provides a unified, interactive platform for analyzing key U.S. macroeconomic indicators such as **inflation (CPI)**, **GDP**, and **employment**. The system automates data ingestion from **FRED** and **BEA**, generates **short‑term forecasts**, enables **what‑if scenario simulations**, and uses **Amazon Bedrock (Claude Opus 4.6)** to explain results in clear business language.
+## What It Does
 
-The solution is designed for a **hackathon environment**: lightweight, fast to run, mostly local, with minimal cloud dependency. The only cloud component is **Bedrock LLM inference**, ensuring security and high‑quality explanations.
+- Pulls real-time economic data from **FRED** (Federal Reserve Economic Data)
+- Forecasts CPI, GDP, Unemployment, Fed Funds Rate, and PCE using multiple models
+- Lets users run **what-if scenarios** (oil price shocks, rate changes, unemployment shifts)
+- Generates **AI narrative explanations** using Claude via Amazon Bedrock
+- Compares model performance with RMSE, AIC, and BIC metrics
 
----
+## Forecasting Models
 
-## 2. Value Proposition
+| Model | Description |
+|-------|-------------|
+| **SARIMAX** | Seasonal ARIMA — the classic time series workhorse |
+| **ETS** | Holt-Winters exponential smoothing |
+| **Prophet** | Meta's decomposable time series model |
+| **VAR** | Vector Autoregression — models cross-indicator dynamics |
+| **Ensemble** | Inverse-RMSE weighted average of all models |
 
-### Business Value
-- Dramatically reduces manual effort in gathering and preparing economic reports.  
-- Provides **real‑time, interactive** insights.  
-- Generates **plain‑English explanations** suitable for executives and non-technical stakeholders.  
-- Enables rapid **scenario exploration** to assess economic shocks (e.g., oil price surge, unemployment changes).  
-- Supports **early warning** via deviation alerts.
+Users can select one or more models and overlay their forecasts on the same chart for visual comparison.
 
-### Hackathon Fit
-- Simple architecture that runs locally.  
-- Uses open and public datasets (FRED & BEA).  
-- Attractive, interactive UI with AI-powered insights.  
-- Easy to demo end‑to‑end functionality within minutes.
+## Quick Start
 
----
+```bash
+# Install dependencies
+cd apps/eco4
+pip install -r requirements.txt
 
-## 3. Target Users
-- Economic Research teams  
-- Strategy & Planning  
-- Risk & Analytics  
-- Policy/Regulatory Insights Teams  
+# Set your FRED API key (get one at https://fred.stlouisfed.org/docs/api/api_key.html)
+# Create a .env file:
+echo "FRED_API_KEY=your_key_here" > .env
 
----
-
-## 4. Feature Overview (Non‑Technical)
-
-### 4.1 Historical Data Visualization  
-- Clean timeseries plots of CPI, GDP, unemployment, etc.  
-- Filter by indicator, date range.
-
-### 4.2 Automatic Short-Term Forecasts  
-- Local machine learning models generate forecasts + confidence bands.  
-- Fast updates; model runs on laptop.
-
-### 4.3 Scenario Analysis (“What‑If”)
-Examples:  
-- *“What happens to CPI if oil prices rise 10%?”*  
-- *“How much does GDP move if unemployment drops 1%?”*  
-User moves sliders → forecasts update visually.
-
-### 4.4 AI Narrative Explanations  
-Powered by **Claude Opus 4.6** via Amazon Bedrock:  
-- Explains forecast drivers  
-- Provides scenario impact narratives  
-- Uses business-friendly language  
-- Enhances trust & transparency  
-
-### 4.5 Alerts  
-- Identifies when actual data deviates meaningfully from expected range  
-- Sends email or UI notifications  
-
----
-
-## 5. High‑Level System Architecture
-
-### **Local Components**
-1. **Data Ingestion**
-   - Pull economic indicators from:
-     - **FRED API**
-     - **BEA API**
-   - Store locally (CSV or SQLite).
-
-2. **Forecasting Engine**
-   - Local models (e.g., Prophet, ARIMA).
-   - Produces baseline forecasts + upper/lower bounds.
-
-3. **Scenario Modeling Engine**
-   - Lightweight elasticity-based or regression-based adjustments.
-   - No expensive retraining needed.
-
-4. **Dashboard UI (Local)**
-   - Built with Streamlit or Dash.
-   - Interactive charts, sliders, forecast visualizations.
-   - Displays AI-generated explanations.
-
-5. **Alerting Module**
-   - Runs locally on schedule.
-   - Checks actuals vs forecast bands.
-
-### **Cloud Component**
-**Amazon Bedrock**
-- LLM used: **Anthropic Claude Opus 4.6**
-- Used only for:
-  - Forecast explanations  
-  - Scenario narratives  
-  - Summary insights  
-- Keeps cloud usage minimal & secure.
-
----
-
-## 6. Architecture Diagram (Text)
-
-```
-                +---------------------+
-                |   FRED / BEA APIs   |
-                +---------------------+
-                          |
-                          v
-           +---------------------------------+
-           |    Local Data Storage (CSV/DB)  |
-           +---------------------------------+
-                          |
-                          v
-            +-------------------------------+
-            |    Local Forecasting Models   |
-            |   (Prophet / ARIMA / SARIMAX) |
-            +-------------------------------+
-                          |
-         +----------------+----------------+
-         |                                 |
-         v                                 v
-+-------------------+           +-----------------------------+
-| Scenario Engine   |           |   Amazon Bedrock (Opus 4.6) |
-| (Adjust Forecast) |           |  Explanation & Narratives    |
-+-------------------+           +-----------------------------+
-         \                                 /
-          \                               /
-           +-----------------------------+
-           |      Local Dashboard (UI)   |
-           +-----------------------------+
-                          |
-                          v
-                 [Optional Alerts]
+# Run the server
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
----
+Open `http://localhost:8000` in your browser.
 
-## 7. Technical Details (Condensed)
+## Environment Variables
 
-### 7.1 Data Layer
-- **FRED**: timeseries fetched via REST endpoints.  
-- **BEA**: GDP/other indicators using NIPA tables via `GetData`.  
-- Stored locally for speed and demo simplicity.  
-- Data refreshed on demand or via local scheduler.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FRED_API_KEY` | Yes | API key for FRED data access |
+| `AWS_REGION` | No | AWS region for Bedrock (default: `us-east-1`) |
+| `BEDROCK_MODEL` | No | Bedrock model ID for AI explanations |
 
-### 7.2 Forecasting Layer
-- Local ML models (Prophet, ARIMA, SARIMAX).  
-- Forecast horizon adjustable by user.  
-- Output includes:
-  - Predicted mean  
-  - Lower bound  
-  - Upper bound  
+## Tech Stack
 
-### 7.3 Scenario Adjustment Model
-- Simple parameterized multipliers based on known relationships.  
-- Example: CPI increases partially with oil price increases.  
-- Fast recomputation to support live UI updates.
+- **Backend**: Python, FastAPI, statsmodels, Prophet
+- **Frontend**: Vue 3, Vuetify 3, Plotly.js (single-page, no build step)
+- **Data**: FRED REST API
+- **AI**: Amazon Bedrock (Claude) for narrative explanations
+- **Infra**: Terraform, EC2, S3
 
-### 7.4 GenAI Explanation Layer (Bedrock)
-- Uses **Claude Opus 4.6**, top-tier reasoning model.  
-- Invoked with narrative prompts providing:
-  - Summary statistics  
-  - Drivers of trends  
-  - Scenario impact  
-- Response returned as plain text for UI display.  
-- Secure, no sensitive data shared.
+## Project Structure
 
-### 7.5 Visualization Layer
-- Streamlit or Dash.  
-- Interactive charts (Plotly).  
-- Forecast + scenario + explanation on same screen.  
-- Runs via browser locally.
+```
+economic-forecasting/
+├── apps/eco4/           # Main application
+│   ├── app.py           # FastAPI backend with all forecasting models
+│   ├── templates/       # Frontend (index.html)
+│   ├── static/          # Static assets
+│   └── requirements.txt
+├── terraform/           # Infrastructure as code
+├── lambda/              # Dashboard Lambda (EC2 start/stop)
+├── scripts/             # EC2 setup scripts
+├── config/              # App configuration
+└── docs/                # Design documents
+```
 
-### 7.6 Alerting Layer
-- Simple threshold deviations:
-  - If actual < lower bound OR actual > upper bound → alert.  
-- Optional email or in-UI marker.
+## API Endpoints
 
----
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/indicators` | List available economic indicators |
+| `GET /api/models` | List available forecasting models |
+| `GET /api/forecast/{indicator}?models=SARIMAX,ETS&periods=12` | Run forecasts |
+| `GET /api/explain/{indicator}` | AI-generated explanation |
+| `GET /api/data/{indicator}` | Raw historical data |
 
-## 8. Non-Functional Considerations
+## Screenshots
 
-### Performance
-- Local computation ensures near-instant chart updates.  
-- Bedrock inference typically <1 sec for short outputs.
+*Dashboard with multi-model forecast comparison, scenario sliders, and AI narrative.*
 
-### Security
-- All economic data is public.  
-- Bedrock used for inference only; no sensitive input.  
-- Minimal IAM scope: only Bedrock invoke permission.
+## License
 
-### Scalability
-- Designed for hackathon but easy to extend:  
-  - Add more indicators  
-  - Use AWS Forecast or SageMaker later  
-  - Deploy UI to a cloud environment  
-
-### Maintainability
-- Clear modular components:
-  - Ingest  
-  - Forecast  
-  - Scenario  
-  - AI explanations  
-  - UI  
-
----
-
-## 9. Demo Narration (What to Say)
-
-**“The dashboard pulls fresh CPI and GDP data directly from FRED and BEA.  
-It automatically generates forecasts and highlights the uncertainty bands.  
-Users can interactively explore scenarios like oil price shocks.  
-Behind the scenes, Amazon Bedrock’s Claude Opus 4.6 transforms the raw numbers into clear economic insights.  
-Everything runs locally except the AI explanations, making it simple, fast, and secure.”**
-
----
-
-## 10. Why This Solution Wins a Hackathon
-
-- Clear business value + impressive AI integration.  
-- Fully functional end-to-end demo.  
-- Clean architecture with minimal dependencies.  
-- Real public economic data (credible + relevant).  
-- Claude Opus 4.6 explanations deliver “wow factor.”  
-- Easy storytelling for judges.  
-
----
-
-If you'd like, I can also create:
-
-- A *one‑page executive summary*  
-- A *slide deck version*  
-- A *repo README version*  
-- A *diagram image* (architecture visual)
-
-Just tell me what format you want next.
+MIT
