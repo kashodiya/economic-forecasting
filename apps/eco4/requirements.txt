@@ -1,2 +1,8 @@
 fastapi
 uvicorn[standard]
+pandas
+numpy
+statsmodels
+httpx
+boto3
+prophet

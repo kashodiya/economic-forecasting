@@ -29,3 +29,8 @@ backend.hcl
 __pycache__/
 *.pyc
 *.pyo
+
+# Environment files (may contain API keys)
+.env
+.env.*
+*.env

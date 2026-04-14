@@ -3,72 +3,419 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>eco4</title>
+  <title>eco4 — Economic Forecasting Dashboard</title>
   <link href="https://cdn.jsdelivr.net/npm/vuetify@3.7.6/dist/vuetify.min.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" rel="stylesheet" />
+  <style>
+    .plotly-chart { width: 100%; min-height: 420px; }
+    .ai-box { background: #f5f5f5; border-left: 4px solid #1976d2; padding: 16px; border-radius: 4px; white-space: pre-wrap; }
+    .dark .ai-box { background: #1e1e1e; }
+    .metric-chip { font-family: 'Roboto Mono', monospace; }
+  </style>
 </head>
 <body>
   <div id="app">
     <v-app>
       <v-app-bar color="primary" dark>
-        <v-app-bar-title>eco4</v-app-bar-title>
+        <v-app-bar-title>
+          <v-icon class="mr-2">mdi-chart-line</v-icon>eco4
+        </v-app-bar-title>
         <v-spacer></v-spacer>
-        <v-btn variant="text" @click="$router.push('/')">Home</v-btn>
-        <v-btn variant="text" @click="$router.push('/about')">About</v-btn>
+        <v-chip variant="outlined" class="mr-2" v-if="fredKeyOk">
+          <v-icon start color="green">mdi-check-circle</v-icon> FRED Connected
+        </v-chip>
+        <v-chip variant="outlined" class="mr-2" v-else>
+          <v-icon start color="red">mdi-alert-circle</v-icon> No FRED Key
+        </v-chip>
       </v-app-bar>
 
       <v-main>
-        <v-container>
-          <router-view></router-view>
+        <v-container fluid class="pa-4">
+
+          <!-- Controls row -->
+          <v-row>
+            <v-col cols="12" md="3">
+              <v-select v-model="selectedIndicator" :items="indicators"
+                item-title="name" item-value="key" label="Economic Indicator"
+                variant="outlined" prepend-inner-icon="mdi-finance"
+                @update:model-value="loadForecast"></v-select>
+            </v-col>
+            <v-col cols="12" md="3">
+              <v-select v-model="selectedModels" :items="modelOptions"
+                item-title="name" item-value="key" label="Forecasting Models"
+                variant="outlined" prepend-inner-icon="mdi-function-variant"
+                multiple chips closable-chips
+                @update:model-value="loadForecast">
+                <template v-slot:chip="{ item, props }">
+                  <v-chip v-bind="props" :color="modelColors[item.value] || 'grey'" variant="flat" size="small">
+                    {{ item.title }}
+                  </v-chip>
+                </template>
+              </v-select>
+            </v-col>
+            <v-col cols="12" md="2">
+              <v-select v-model="forecastPeriods" :items="[6,12,18,24,36]"
+                label="Forecast Periods" variant="outlined"
+                prepend-inner-icon="mdi-calendar-range"
+                @update:model-value="loadForecast"></v-select>
+            </v-col>
+            <v-col cols="12" md="2">
+              <v-btn color="primary" size="large" @click="loadForecast" :loading="loading" block>
+                <v-icon start>mdi-refresh</v-icon> Update Forecast
+              </v-btn>
+            </v-col>
+            <v-col cols="12" md="2">
+              <v-btn color="secondary" size="large" @click="getExplanation" :loading="aiLoading" block>
+                <v-icon start>mdi-robot</v-icon> AI Explain
+              </v-btn>
+            </v-col>
+          </v-row>
+
+          <v-alert v-if="error" type="error" closable class="mb-4" @click:close="error=''">{{ error }}</v-alert>
+
+          <!-- Summary cards -->
+          <v-row v-if="summary" class="mb-4">
+            <v-col cols="6" md="3">
+              <v-card variant="tonal" color="blue">
+                <v-card-text class="text-center">
+                  <div class="text-caption">Latest Value</div>
+                  <div class="text-h5">{{ summary.latest_value }}</div>
+                  <div class="text-caption">{{ summary.latest_date }}</div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+            <v-col cols="6" md="3">
+              <v-card variant="tonal" color="green">
+                <v-card-text class="text-center">
+                  <div class="text-caption">Next Forecast</div>
+                  <div class="text-h5">{{ summary.forecast_next }}</div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+            <v-col cols="6" md="3">
+              <v-card variant="tonal" color="orange">
+                <v-card-text class="text-center">
+                  <div class="text-caption">Forecast Range</div>
+                  <div class="text-h5">{{ summary.forecast_low }} – {{ summary.forecast_high }}</div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+            <v-col cols="6" md="3">
+              <v-card variant="tonal" :color="summary.trend === 'rising' ? 'green' : summary.trend === 'falling' ? 'red' : 'grey'">
+                <v-card-text class="text-center">
+                  <div class="text-caption">12-Period Trend</div>
+                  <div class="text-h5">
+                    <v-icon>{{ summary.trend === 'rising' ? 'mdi-trending-up' : summary.trend === 'falling' ? 'mdi-trending-down' : 'mdi-trending-neutral' }}</v-icon>
+                    {{ summary.trend }}
+                  </div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+          </v-row>
+
+          <!-- Model metrics comparison -->
+          <v-card class="mb-4" v-if="Object.keys(metrics).length">
+            <v-card-title>
+              <v-icon class="mr-2">mdi-chart-box-outline</v-icon> Model Comparison
+            </v-card-title>
+            <v-card-text>
+              <v-table density="compact">
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>RMSE</th>
+                    <th>AIC</th>
+                    <th>BIC</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(m, name) in metrics" :key="name">
+                    <td>
+                      <v-chip :color="modelColors[name] || 'grey'" variant="flat" size="small">{{ name }}</v-chip>
+                    </td>
+                    <td class="metric-chip">{{ m.error ? '—' : (m.rmse != null ? m.rmse : '—') }}</td>
+                    <td class="metric-chip">{{ m.aic != null ? m.aic : '—' }}</td>
+                    <td class="metric-chip">{{ m.bic != null ? m.bic : '—' }}</td>
+                    <td class="text-caption">
+                      <span v-if="m.error" class="text-red">{{ m.error }}</span>
+                      <span v-else-if="m.weights">Weights: <span v-for="(w,k) in m.weights" :key="k">{{ k }}={{ w }} </span></span>
+                      <span v-else-if="m.lag_order">Lag order: {{ m.lag_order }}</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </v-card-text>
+          </v-card>
+
+          <!-- Main chart -->
+          <v-card class="mb-4" :loading="loading">
+            <v-card-title>
+              <v-icon class="mr-2">mdi-chart-areaspline</v-icon>
+              {{ currentMeta ? currentMeta.name : 'Select an indicator' }}
+              <span v-if="currentMeta" class="text-caption ml-2">({{ currentMeta.unit }})</span>
+            </v-card-title>
+            <v-card-text>
+              <div id="mainChart" class="plotly-chart"></div>
+            </v-card-text>
+          </v-card>
+
+          <!-- Scenario panel + AI explanation -->
+          <v-row>
+            <v-col cols="12" md="6">
+              <v-card>
+                <v-card-title>
+                  <v-icon class="mr-2">mdi-tune-variant</v-icon> Scenario Analysis (What-If)
+                </v-card-title>
+                <v-card-text>
+                  <div class="mb-4">
+                    <label class="text-subtitle-2">Oil Price Change (%)</label>
+                    <v-slider v-model="shocks.OIL_PRICE" :min="-30" :max="30" :step="1" thumb-label="always" color="orange" @end="loadForecast"></v-slider>
+                  </div>
+                  <div class="mb-4">
+                    <label class="text-subtitle-2">Unemployment Rate Change (pp)</label>
+                    <v-slider v-model="shocks.UNRATE" :min="-5" :max="5" :step="0.5" thumb-label="always" color="red" @end="loadForecast"></v-slider>
+                  </div>
+                  <div class="mb-4">
+                    <label class="text-subtitle-2">Fed Funds Rate Change (pp)</label>
+                    <v-slider v-model="shocks.FEDFUNDS" :min="-3" :max="3" :step="0.25" thumb-label="always" color="purple" @end="loadForecast"></v-slider>
+                  </div>
+                  <v-btn variant="outlined" size="small" @click="resetShocks">
+                    <v-icon start>mdi-restore</v-icon> Reset Shocks
+                  </v-btn>
+                </v-card-text>
+              </v-card>
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-card>
+                <v-card-title>
+                  <v-icon class="mr-2">mdi-robot-outline</v-icon> AI Narrative (Claude via Bedrock)
+                </v-card-title>
+                <v-card-text>
+                  <div v-if="aiLoading" class="text-center pa-4">
+                    <v-progress-circular indeterminate color="primary"></v-progress-circular>
+                    <div class="mt-2">Generating explanation...</div>
+                  </div>
+                  <div v-else-if="aiExplanation" class="ai-box">{{ aiExplanation }}</div>
+                  <div v-else class="text-grey text-center pa-4">
+                    Click "AI Explain" to generate an insight for the current indicator and models.
+                  </div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+          </v-row>
+
+          <!-- Alerts -->
+          <v-card class="mt-4" v-if="alerts.length">
+            <v-card-title>
+              <v-icon class="mr-2" color="warning">mdi-alert</v-icon> Deviation Alerts
+            </v-card-title>
+            <v-card-text>
+              <v-alert v-for="(a, i) in alerts" :key="i" :type="a.type" variant="tonal" class="mb-2" density="compact">
+                {{ a.message }}
+              </v-alert>
+            </v-card-text>
+          </v-card>
+
         </v-container>
       </v-main>
     </v-app>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vue-router@4.5.0/dist/vue-router.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/vuetify@3.7.6/dist/vuetify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.0/plotly.min.js"></script>
 
   <script>
-    const { createApp, ref } = Vue
+    const { createApp, ref, reactive, onMounted } = Vue
 
-    const Home = {
-      template: `
-        <div>
-          <v-card class="mt-4">
-            <v-card-title>Welcome to eco4</v-card-title>
-            <v-card-text>Economic forecasting dashboard.</v-card-text>
-          </v-card>
-        </div>
-      `
+    const MODEL_COLORS = {
+      SARIMAX: '#1976d2', ETS: '#4caf50', Prophet: '#ff9800', VAR: '#9c27b0', Ensemble: '#e91e63'
+    }
+    const SCENARIO_COLORS = {
+      SARIMAX: '#90caf9', ETS: '#a5d6a7', Prophet: '#ffcc80', VAR: '#ce93d8', Ensemble: '#f48fb1'
     }
 
-    const About = {
-      template: `
-        <div>
-          <v-card class="mt-4">
-            <v-card-title>About</v-card-title>
-            <v-card-text>eco4 — a hackathon project for economic forecasting.</v-card-text>
-          </v-card>
-        </div>
-      `
-    }
+    const app = createApp({
+      setup() {
+        const indicators = ref([])
+        const modelOptions = ref([])
+        const selectedIndicator = ref('CPI')
+        const selectedModels = ref(['SARIMAX'])
+        const forecastPeriods = ref(12)
+        const loading = ref(false)
+        const aiLoading = ref(false)
+        const error = ref('')
+        const summary = ref(null)
+        const currentMeta = ref(null)
+        const aiExplanation = ref('')
+        const alerts = ref([])
+        const fredKeyOk = ref(true)
+        const metrics = ref({})
+        const modelColors = ref(MODEL_COLORS)
 
-    const routes = [
-      { path: '/', component: Home },
-      { path: '/about', component: About },
-    ]
+        const shocks = reactive({ OIL_PRICE: 0, UNRATE: 0, FEDFUNDS: 0 })
 
-    const router = VueRouter.createRouter({
-      history: VueRouter.createWebHistory(),
-      routes,
+        function hasShocks() {
+          return shocks.OIL_PRICE !== 0 || shocks.UNRATE !== 0 || shocks.FEDFUNDS !== 0
+        }
+
+        function resetShocks() {
+          shocks.OIL_PRICE = 0; shocks.UNRATE = 0; shocks.FEDFUNDS = 0
+          loadForecast()
+        }
+
+        async function loadIndicators() {
+          try {
+            const resp = await fetch('/api/indicators')
+            indicators.value = await resp.json()
+          } catch (e) { error.value = 'Failed to load indicators' }
+        }
+
+        async function loadModels() {
+          try {
+            const resp = await fetch('/api/models')
+            modelOptions.value = await resp.json()
+          } catch (e) { /* use defaults */ }
+        }
+
+        async function loadForecast() {
+          loading.value = true
+          error.value = ''
+          try {
+            const shockParam = hasShocks() ? JSON.stringify(shocks) : '{}'
+            const modelsParam = selectedModels.value.join(',')
+            const url = `/api/forecast/${selectedIndicator.value}?periods=${forecastPeriods.value}&models=${encodeURIComponent(modelsParam)}&shocks=${encodeURIComponent(shockParam)}`
+            const resp = await fetch(url)
+            const data = await resp.json()
+            if (data.error) { error.value = data.error; return }
+
+            summary.value = data.summary
+            currentMeta.value = data.meta
+            metrics.value = data.metrics || {}
+            drawChart(data)
+            checkAlerts(data)
+          } catch (e) {
+            error.value = 'Failed to load forecast: ' + e.message
+            fredKeyOk.value = false
+          } finally {
+            loading.value = false
+          }
+        }
+
+        function drawChart(data) {
+          const hist = data.historical || []
+          const forecasts = data.forecasts || {}
+          const scenarios = data.scenarios || {}
+          const traces = []
+
+          // Historical
+          traces.push({
+            x: hist.map(d => d.date), y: hist.map(d => d.value),
+            name: 'Historical', type: 'scatter', mode: 'lines',
+            line: { color: '#455a64', width: 2.5 },
+          })
+
+          const lastHist = hist.length ? hist[hist.length - 1] : null
+
+          // Each model's forecast
+          for (const [modelName, fc] of Object.entries(forecasts)) {
+            if (!fc || !fc.length) continue
+            const color = MODEL_COLORS[modelName] || '#999'
+            const scenColor = SCENARIO_COLORS[modelName] || '#ccc'
+
+            const fcX = fc.map(d => d.date)
+            const fcY = fc.map(d => d.predicted)
+            const loY = fc.map(d => d.lower)
+            const hiY = fc.map(d => d.upper)
+            if (lastHist) { fcX.unshift(lastHist.date); fcY.unshift(lastHist.value); loY.unshift(lastHist.value); hiY.unshift(lastHist.value) }
+
+            traces.push({
+              x: fcX, y: fcY,
+              name: modelName, type: 'scatter', mode: 'lines',
+              line: { color, width: 2, dash: 'dash' },
+            })
+            traces.push({
+              x: fcX.concat([...fcX].reverse()),
+              y: hiY.concat([...loY].reverse()),
+              name: modelName + ' 80% CI', type: 'scatter', fill: 'toself',
+              fillcolor: color + '18', line: { color: 'transparent' },
+              showlegend: true,
+            })
+
+            // Scenario overlay
+            const sc = scenarios[modelName]
+            if (sc && sc.length) {
+              const sX = sc.map(d => d.date)
+              const sY = sc.map(d => d.predicted)
+              if (lastHist) { sX.unshift(lastHist.date); sY.unshift(lastHist.value) }
+              traces.push({
+                x: sX, y: sY,
+                name: modelName + ' Scenario', type: 'scatter', mode: 'lines',
+                line: { color: scenColor, width: 2, dash: 'dot' },
+              })
+            }
+          }
+
+          const layout = {
+            margin: { t: 30, r: 30, b: 50, l: 60 },
+            xaxis: { title: 'Date' },
+            yaxis: { title: data.meta ? data.meta.unit : '' },
+            legend: { orientation: 'h', y: -0.2 },
+            hovermode: 'x unified',
+          }
+          Plotly.newPlot('mainChart', traces, layout, { responsive: true })
+        }
+
+        function checkAlerts(data) {
+          alerts.value = []
+          const hist = data.historical || []
+          const forecasts = data.forecasts || {}
+          if (!hist.length) return
+          const last = hist[hist.length - 1]
+          for (const [modelName, fc] of Object.entries(forecasts)) {
+            if (!fc || !fc.length) continue
+            const firstFc = fc[0]
+            if (last.value > firstFc.upper) {
+              alerts.value.push({ type: 'warning', message: `${modelName}: Latest actual (${last.value.toFixed(2)}) is ABOVE the forecast upper bound (${firstFc.upper.toFixed(2)})` })
+            } else if (last.value < firstFc.lower) {
+              alerts.value.push({ type: 'warning', message: `${modelName}: Latest actual (${last.value.toFixed(2)}) is BELOW the forecast lower bound (${firstFc.lower.toFixed(2)})` })
+            }
+          }
+        }
+
+        async function getExplanation() {
+          aiLoading.value = true
+          aiExplanation.value = ''
+          try {
+            const shockParam = hasShocks() ? JSON.stringify(shocks) : '{}'
+            const modelsParam = selectedModels.value.join(',')
+            const url = `/api/explain/${selectedIndicator.value}?models=${encodeURIComponent(modelsParam)}&shocks=${encodeURIComponent(shockParam)}`
+            const resp = await fetch(url)
+            const data = await resp.json()
+            if (data.error) { error.value = data.error; return }
+            aiExplanation.value = data.explanation
+          } catch (e) {
+            error.value = 'AI explanation failed: ' + e.message
+          } finally {
+            aiLoading.value = false
+          }
+        }
+
+        onMounted(async () => {
+          await Promise.all([loadIndicators(), loadModels()])
+          await loadForecast()
+        })
+
+        return {
+          indicators, modelOptions, selectedIndicator, selectedModels,
+          forecastPeriods, loading, aiLoading, error, summary, currentMeta,
+          aiExplanation, alerts, fredKeyOk, metrics, modelColors,
+          shocks, hasShocks, resetShocks, loadForecast, getExplanation,
+        }
+      }
     })
-
-    const vuetify = Vuetify.createVuetify()
-
-    const app = createApp({})
-    app.use(router)
-    app.use(vuetify)
+    app.use(Vuetify.createVuetify())
     app.mount('#app')
   </script>
 </body>
