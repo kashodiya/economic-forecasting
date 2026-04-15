@@ -1,0 +1,1345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Economic Digital Twin Dashboard</title>
+  <!-- Vuetify CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@3/dist/vuetify.min.css" rel="stylesheet" />
+  <!-- Material Design Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7/css/materialdesignicons.min.css" rel="stylesheet" />
+  <style>
+    [v-cloak] { display: none; }
+  </style>
+</head>
+<body>
+  <div id="app" v-cloak>
+    <v-app>
+      <!-- Navigation Bar -->
+      <v-app-bar color="indigo-darken-2" density="comfortable">
+        <v-app-bar-title>
+          <v-icon class="mr-2">mdi-chart-timeline-variant-shimmer</v-icon>
+          Economic Digital Twin
+        </v-app-bar-title>
+        <template v-slot:append>
+          <v-btn v-for="link in navLinks" :key="link.path"
+                 :to="link.path" variant="text" class="mx-1">
+            <v-icon start>{{ link.icon }}</v-icon>
+            {{ link.label }}
+          </v-btn>
+        </template>
+      </v-app-bar>
+
+      <!-- Main Content -->
+      <v-main>
+        <v-container fluid>
+          <router-view></router-view>
+        </v-container>
+      </v-main>
+    </v-app>
+  </div>
+
+  <!-- Vue 3 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <!-- Vue Router 4 -->
+  <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
+  <!-- Vuetify 3 -->
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@3/dist/vuetify.min.js"></script>
+  <!-- Chart.js (for later use) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+  const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
+  const { createRouter, createWebHashHistory } = VueRouter;
+  const { createVuetify } = Vuetify;
+
+  // -----------------------------------------------------------------------
+  // View Components (placeholders — filled in by subsequent tasks)
+  // -----------------------------------------------------------------------
+
+  const TrendsView = {
+    template: `
+      <v-card class="ma-4 pa-6" variant="outlined">
+        <v-card-title>
+          <v-icon class="mr-2">mdi-chart-line</v-icon>
+          Trends &amp; Forecasts
+        </v-card-title>
+        <v-card-text>
+          <v-row align="center" class="mb-4">
+            <v-col cols="12" md="5">
+              <v-autocomplete
+                v-model="selectedIndicator"
+                :items="indicatorIds"
+                label="Select Indicator"
+                prepend-inner-icon="mdi-magnify"
+                variant="outlined"
+                density="comfortable"
+                clearable
+                :loading="loadingIndicators"
+                @update:model-value="onIndicatorChange"
+              ></v-autocomplete>
+            </v-col>
+            <v-col cols="12" md="4">
+              <v-btn-toggle v-model="dateRange" mandatory density="comfortable" color="indigo"
+                            :disabled="!selectedIndicator" @update:model-value="onDateRangeChange">
+                <v-btn value="1Y" size="small">1Y</v-btn>
+                <v-btn value="5Y" size="small">5Y</v-btn>
+                <v-btn value="10Y" size="small">10Y</v-btn>
+                <v-btn value="ALL" size="small">All</v-btn>
+              </v-btn-toggle>
+            </v-col>
+            <v-col cols="12" md="3">
+              <v-switch
+                v-model="showBands"
+                label="Show p10/p90 bands"
+                color="indigo"
+                density="comfortable"
+                :disabled="!selectedIndicator"
+                @update:model-value="updateBandVisibility"
+              ></v-switch>
+            </v-col>
+          </v-row>
+
+          <v-progress-linear v-if="loadingForecast" indeterminate color="indigo" class="mb-4"></v-progress-linear>
+
+          <v-alert v-if="errorMsg" type="error" variant="tonal" closable class="mb-4">{{ errorMsg }}</v-alert>
+
+          <div v-if="selectedIndicator && !loadingForecast" style="position:relative;height:400px;">
+            <canvas ref="chartCanvas"></canvas>
+          </div>
+
+          <div v-if="!selectedIndicator && !loadingIndicators" class="text-center text-grey py-8">
+            <v-icon size="48" class="mb-2">mdi-chart-bell-curve-cumulative</v-icon>
+            <div class="text-body-1">Select an indicator above to view trends and forecasts.</div>
+          </div>
+
+          <div v-if="explanation" class="mt-6">
+            <v-divider class="mb-4"></v-divider>
+            <div class="text-subtitle-1 font-weight-bold mb-2">
+              <v-icon class="mr-1" size="small">mdi-lightbulb-on-outline</v-icon>
+              Forecast Explanation
+            </div>
+            <p class="text-body-2 mb-4">{{ explanation }}</p>
+          </div>
+
+          <div v-if="features && features.length" class="mt-4">
+            <div class="text-subtitle-1 font-weight-bold mb-2">
+              <v-icon class="mr-1" size="small">mdi-format-list-numbered</v-icon>
+              Top Feature Importance
+            </div>
+            <v-table density="compact">
+              <thead>
+                <tr>
+                  <th>Feature</th>
+                  <th>Importance</th>
+                  <th>Direction</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="f in features" :key="f.feature_name">
+                  <td>{{ f.feature_name }}</td>
+                  <td>{{ (f.importance_score != null ? f.importance_score.toFixed(3) : 'N/A') }}</td>
+                  <td>
+                    <v-chip :color="f.direction === 'positive' ? 'green' : 'red'" size="small" variant="tonal">
+                      <v-icon start size="x-small">{{ f.direction === 'positive' ? 'mdi-arrow-up' : 'mdi-arrow-down' }}</v-icon>
+                      {{ f.direction }}
+                    </v-chip>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+          </div>
+        </v-card-text>
+      </v-card>
+    `,
+    setup() {
+      const chartCanvas = ref(null);
+      const selectedIndicator = ref(null);
+      const indicatorIds = ref([]);
+      const loadingIndicators = ref(false);
+      const loadingForecast = ref(false);
+      const showBands = ref(true);
+      const explanation = ref('');
+      const features = ref([]);
+      const errorMsg = ref('');
+      const dateRange = ref('5Y');
+      let chartInstance = null;
+
+      // Full data (unfiltered) kept for range switching
+      const fullData = reactive({ labels: [], historical: [], p50: [], p10: [], p90: [] });
+      // Filtered data used for chart rendering
+      const chartData = reactive({ labels: [], historical: [], p50: [], p10: [], p90: [] });
+
+      async function fetchIndicators() {
+        loadingIndicators.value = true;
+        errorMsg.value = '';
+        try {
+          const res = await fetch('/api/indicators');
+          if (!res.ok) throw new Error('Failed to fetch indicators');
+          const data = await res.json();
+          const obs = data.observations || [];
+          const ids = [...new Set(obs.map(o => o.indicator_id))];
+          ids.sort();
+          indicatorIds.value = ids;
+        } catch (e) {
+          errorMsg.value = e.message || 'Error loading indicators';
+        } finally {
+          loadingIndicators.value = false;
+        }
+      }
+
+      async function onIndicatorChange(id) {
+        if (!id) {
+          destroyChart();
+          explanation.value = '';
+          features.value = [];
+          return;
+        }
+        loadingForecast.value = true;
+        errorMsg.value = '';
+        explanation.value = '';
+        features.value = [];
+        try {
+          // Fetch historical observations for this indicator
+          const obsRes = await fetch('/api/indicators?indicator_id=' + encodeURIComponent(id));
+          if (!obsRes.ok) throw new Error('Failed to fetch observations');
+          const obsData = await obsRes.json();
+          const observations = (obsData.observations || [])
+            .sort((a, b) => a.observation_date.localeCompare(b.observation_date));
+
+          // Fetch forecast
+          const fcRes = await fetch('/api/forecasts/' + encodeURIComponent(id));
+          let forecast = null;
+          if (fcRes.ok) {
+            forecast = await fcRes.json();
+          }
+
+          // Build chart data
+          const histLabels = observations.map(o => o.observation_date);
+          const histValues = observations.map(o => o.value);
+
+          let fcLabels = [], fcP50 = [], fcP10 = [], fcP90 = [];
+          if (forecast && forecast.periods && forecast.periods.length) {
+            fcLabels = forecast.periods.map(p => p.date);
+            fcP50 = forecast.periods.map(p => p.p50);
+            fcP10 = forecast.periods.map(p => p.p10);
+            fcP90 = forecast.periods.map(p => p.p90);
+          }
+
+          // Combine labels
+          const allLabels = [...histLabels, ...fcLabels];
+          // Historical line: values for hist dates, null for forecast dates
+          const histLine = [...histValues, ...fcLabels.map(() => null)];
+          // Forecast lines: null for hist dates, values for forecast dates
+          const p50Line = [...histLabels.map(() => null), ...fcP50];
+          const p10Line = [...histLabels.map(() => null), ...fcP10];
+          const p90Line = [...histLabels.map(() => null), ...fcP90];
+
+          // Bridge: connect last historical point to first forecast point
+          if (histValues.length && fcP50.length) {
+            p50Line[histValues.length - 1] = histValues[histValues.length - 1];
+            p10Line[histValues.length - 1] = histValues[histValues.length - 1];
+            p90Line[histValues.length - 1] = histValues[histValues.length - 1];
+          }
+
+          chartData.labels = allLabels;
+          chartData.historical = histLine;
+          chartData.p50 = p50Line;
+          chartData.p10 = p10Line;
+          chartData.p90 = p90Line;
+
+          // Store full data for range switching
+          fullData.labels = allLabels;
+          fullData.historical = histLine;
+          fullData.p50 = p50Line;
+          fullData.p10 = p10Line;
+          fullData.p90 = p90Line;
+
+          applyDateRange();
+
+          // Explanation and features
+          if (forecast) {
+            explanation.value = forecast.explanation || '';
+            features.value = forecast.features || [];
+          }
+
+        } catch (e) {
+          errorMsg.value = e.message || 'Error loading forecast data';
+        } finally {
+          loadingForecast.value = false;
+          await nextTick();
+          setTimeout(() => renderChart(), 100);
+        }
+      }
+
+      function applyDateRange() {
+        const range = dateRange.value;
+        if (range === 'ALL' || !fullData.labels.length) {
+          chartData.labels = fullData.labels;
+          chartData.historical = fullData.historical;
+          chartData.p50 = fullData.p50;
+          chartData.p10 = fullData.p10;
+          chartData.p90 = fullData.p90;
+          return;
+        }
+        const years = range === '1Y' ? 1 : range === '5Y' ? 5 : 10;
+        const cutoff = new Date();
+        cutoff.setFullYear(cutoff.getFullYear() - years);
+        const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+        // Find the start index where labels >= cutoff (forecast dates always included)
+        let startIdx = 0;
+        for (let i = 0; i < fullData.labels.length; i++) {
+          if (fullData.labels[i] >= cutoffStr) { startIdx = i; break; }
+        }
+
+        chartData.labels = fullData.labels.slice(startIdx);
+        chartData.historical = fullData.historical.slice(startIdx);
+        chartData.p50 = fullData.p50.slice(startIdx);
+        chartData.p10 = fullData.p10.slice(startIdx);
+        chartData.p90 = fullData.p90.slice(startIdx);
+      }
+
+      function onDateRangeChange() {
+        applyDateRange();
+        setTimeout(() => renderChart(), 50);
+      }
+
+      function destroyChart() {
+        if (chartInstance) {
+          chartInstance.destroy();
+          chartInstance = null;
+        }
+      }
+
+      function renderChart() {
+        destroyChart();
+        const canvas = chartCanvas.value;
+        console.log('[TrendsView] renderChart called, canvas:', canvas);
+        if (!canvas) { console.warn('[TrendsView] canvas ref is null, skipping render'); return; }
+        const ctx = canvas.getContext('2d');
+
+        const datasets = [
+          {
+            label: 'Historical',
+            data: chartData.historical,
+            borderColor: '#3949AB',
+            backgroundColor: '#3949AB',
+            borderWidth: 2,
+            pointRadius: 1,
+            tension: 0.3,
+            spanGaps: false,
+            order: 2
+          },
+          {
+            label: 'Forecast (p50)',
+            data: chartData.p50,
+            borderColor: '#FF7043',
+            backgroundColor: '#FF7043',
+            borderWidth: 2,
+            borderDash: [6, 3],
+            pointRadius: 2,
+            tension: 0.3,
+            spanGaps: false,
+            order: 3
+          },
+          {
+            label: 'p90 (upper)',
+            data: chartData.p90,
+            borderColor: 'rgba(255,112,67,0.3)',
+            backgroundColor: 'rgba(255,112,67,0.08)',
+            borderWidth: 1,
+            borderDash: [3, 3],
+            pointRadius: 0,
+            tension: 0.3,
+            fill: false,
+            spanGaps: false,
+            hidden: !showBands.value,
+            order: 1
+          },
+          {
+            label: 'p10 (lower)',
+            data: chartData.p10,
+            borderColor: 'rgba(255,112,67,0.3)',
+            backgroundColor: 'rgba(255,112,67,0.12)',
+            borderWidth: 1,
+            borderDash: [3, 3],
+            pointRadius: 0,
+            tension: 0.3,
+            fill: '-1',
+            spanGaps: false,
+            hidden: !showBands.value,
+            order: 0
+          }
+        ];
+
+        chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: { labels: chartData.labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { position: 'top' },
+              tooltip: { mode: 'index', intersect: false }
+            },
+            scales: {
+              x: {
+                title: { display: true, text: 'Date' },
+                ticks: { maxTicksLimit: 15, maxRotation: 45 }
+              },
+              y: {
+                title: { display: true, text: 'Value' }
+              }
+            }
+          }
+        });
+      }
+
+      function updateBandVisibility() {
+        if (!chartInstance) return;
+        // Datasets index 2 = p90, 3 = p10
+        chartInstance.data.datasets[2].hidden = !showBands.value;
+        chartInstance.data.datasets[3].hidden = !showBands.value;
+        chartInstance.update();
+      }
+
+      onMounted(() => {
+        fetchIndicators();
+      });
+
+      return {
+        chartCanvas, selectedIndicator, indicatorIds,
+        loadingIndicators, loadingForecast, showBands, dateRange,
+        explanation, features, errorMsg,
+        onIndicatorChange, updateBandVisibility, onDateRangeChange
+      };
+    }
+  };
+
+  const AgentTheater = {
+    template: `
+      <v-card class="ma-4 pa-6" variant="outlined">
+        <v-card-title>
+          <v-icon class="mr-2">mdi-account-group</v-icon>
+          Agent Theater
+        </v-card-title>
+        <v-card-text>
+          <!-- Scenario selector -->
+          <v-row class="mb-4" align="center">
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="selectedScenarioId"
+                :items="scenarioItems"
+                item-title="label"
+                item-value="id"
+                label="Select Scenario"
+                prepend-inner-icon="mdi-flask"
+                variant="outlined"
+                density="comfortable"
+                :loading="loadingScenarios"
+                no-data-text="No scenarios yet. Run one in Scenario Studio first."
+                @update:model-value="fetchAgents"
+              ></v-select>
+            </v-col>
+            <v-col cols="12" md="2">
+              <v-btn
+                color="indigo"
+                variant="tonal"
+                size="small"
+                :loading="loadingScenarios"
+                @click="fetchScenarios"
+                prepend-icon="mdi-refresh"
+              >
+                Refresh
+              </v-btn>
+            </v-col>
+          </v-row>
+
+          <v-progress-linear v-if="loading" indeterminate color="indigo" class="mb-4"></v-progress-linear>
+
+          <v-alert v-if="errorMsg" type="error" variant="tonal" closable class="mb-4" @click:close="errorMsg=''">
+            {{ errorMsg }}
+          </v-alert>
+
+          <!-- Empty state -->
+          <div v-if="!loading && agents.length === 0 && !errorMsg" class="text-center text-grey py-10">
+            <v-icon size="56" class="mb-3">mdi-account-group-outline</v-icon>
+            <div class="text-body-1 mb-4">No simulation data available. Run a scenario in Scenario Studio first.</div>
+            <v-btn color="indigo" variant="tonal" to="/scenarios" prepend-icon="mdi-flask">
+              Go to Scenario Studio
+            </v-btn>
+          </div>
+
+          <!-- Agent cards grid -->
+          <v-row v-if="agents.length > 0">
+            <v-col
+              v-for="agent in agents"
+              :key="agent.agent_type"
+              cols="12"
+              md="6"
+            >
+              <v-card variant="tonal" :color="agentColor(agent.agent_type)" class="h-100">
+                <v-card-title class="d-flex align-center gap-2 pb-1">
+                  <v-icon :icon="agentIcon(agent.agent_type)" class="mr-2"></v-icon>
+                  {{ agent.agent_type }}
+                </v-card-title>
+                <v-card-text>
+                  <div class="text-subtitle-2 font-weight-bold mb-1">
+                    <v-icon size="small" class="mr-1">mdi-brain</v-icon>Beliefs
+                  </div>
+                  <v-table density="compact" class="mb-3 rounded">
+                    <tbody>
+                      <tr v-for="(val, key) in parsedBeliefs(agent.beliefs)" :key="key">
+                        <td class="text-caption font-weight-medium" style="width:50%">{{ formatKey(key) }}</td>
+                        <td class="text-caption">{{ val }}</td>
+                      </tr>
+                    </tbody>
+                  </v-table>
+                  <div class="text-subtitle-2 font-weight-bold mb-1">
+                    <v-icon size="small" class="mr-1">mdi-lightning-bolt</v-icon>Action
+                  </div>
+                  <v-chip color="indigo" variant="tonal" size="small" class="mb-3 text-wrap" style="height:auto;white-space:normal">
+                    {{ agent.action }}
+                  </v-chip>
+                  <div class="text-subtitle-2 font-weight-bold mb-1">
+                    <v-icon size="small" class="mr-1">mdi-comment-text-outline</v-icon>Rationale
+                  </div>
+                  <p class="text-body-2 text-medium-emphasis">{{ agent.rationale }}</p>
+                </v-card-text>
+              </v-card>
+            </v-col>
+          </v-row>
+        </v-card-text>
+      </v-card>
+    `,
+    setup() {
+      const selectedScenarioId = ref(null);
+      const scenarioItems = ref([]);
+      const loadingScenarios = ref(false);
+      const loading = ref(false);
+      const errorMsg = ref('');
+      const agents = ref([]);
+
+      const AGENT_ICONS = {
+        Household:   'mdi-home-account',
+        Firm:        'mdi-factory',
+        Bank:        'mdi-bank',
+        Policymaker: 'mdi-gavel',
+      };
+
+      const AGENT_COLORS = {
+        Household:   'blue',
+        Firm:        'green',
+        Bank:        'orange',
+        Policymaker: 'purple',
+      };
+
+      function agentIcon(type) {
+        return AGENT_ICONS[type] || 'mdi-account';
+      }
+
+      function agentColor(type) {
+        return AGENT_COLORS[type] || 'grey';
+      }
+
+      function parsedBeliefs(beliefs) {
+        if (!beliefs) return {};
+        if (typeof beliefs === 'string') {
+          try { return JSON.parse(beliefs); } catch { return { raw: beliefs }; }
+        }
+        return beliefs;
+      }
+
+      function formatKey(key) {
+        return String(key).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      }
+
+      async function fetchScenarios() {
+        loadingScenarios.value = true;
+        try {
+          const res = await fetch('/api/scenarios');
+          if (!res.ok) throw new Error('Failed to fetch scenarios');
+          const data = await res.json();
+          const list = data.scenarios || [];
+          scenarioItems.value = list.map(s => ({
+            id: s.id,
+            label: '#' + s.id + ' — ' + s.shock_variable + ' ' + (s.shock_magnitude >= 0 ? '+' : '') + s.shock_magnitude + '% (' + s.shock_duration + 'Q)',
+          }));
+          // Auto-select latest if nothing selected
+          if (!selectedScenarioId.value && list.length > 0) {
+            selectedScenarioId.value = list[0].id;
+            await fetchAgents(list[0].id);
+          }
+        } catch (e) {
+          errorMsg.value = e.message || 'Error loading scenarios';
+        } finally {
+          loadingScenarios.value = false;
+        }
+      }
+
+      async function fetchAgents(id) {
+        const scenarioId = id || selectedScenarioId.value;
+        if (!scenarioId) return;
+        loading.value = true;
+        errorMsg.value = '';
+        agents.value = [];
+        try {
+          const res = await fetch('/api/agents/' + encodeURIComponent(scenarioId));
+          if (res.status === 404) {
+            errorMsg.value = 'Scenario not found. Please check the ID and try again.';
+            return;
+          }
+          if (!res.ok) throw new Error('Failed to fetch agent states (HTTP ' + res.status + ')');
+          const data = await res.json();
+          agents.value = data.agents || [];
+          if (agents.value.length === 0) {
+            errorMsg.value = 'No agent data found for this scenario.';
+          }
+        } catch (e) {
+          errorMsg.value = e.message || 'Error loading agent data';
+        } finally {
+          loading.value = false;
+        }
+      }
+
+      onMounted(() => {
+        fetchScenarios();
+      });
+
+      return {
+        selectedScenarioId, scenarioItems, loadingScenarios,
+        loading, errorMsg, agents,
+        agentIcon, agentColor, parsedBeliefs, formatKey,
+        fetchScenarios, fetchAgents,
+      };
+    }
+  };
+
+  const RECOGNIZED_VARIABLES = [
+    "energy_price", "interest_rate", "oil_price",
+    "tax_rate", "government_spending", "trade_tariff",
+    "cpi", "unemployment", "gdp_growth"
+  ];
+
+  const ScenarioStudio = {
+    template: `
+      <v-card class="ma-4 pa-6" variant="outlined">
+        <v-card-title>
+          <v-icon class="mr-2">mdi-flask</v-icon>
+          Scenario Studio
+        </v-card-title>
+        <v-card-text>
+
+          <!-- Shock Input Form -->
+          <v-row class="mb-2">
+            <v-col cols="12" md="4">
+              <v-select
+                v-model="form.variable"
+                :items="recognizedVariables"
+                label="Shock Variable"
+                prepend-inner-icon="mdi-variable"
+                variant="outlined"
+                density="comfortable"
+                :error-messages="fieldError('variable')"
+              ></v-select>
+            </v-col>
+            <v-col cols="12" md="3">
+              <v-text-field
+                v-model.number="form.magnitude"
+                label="Magnitude (%)"
+                type="number"
+                prepend-inner-icon="mdi-plus-minus-variant"
+                variant="outlined"
+                density="comfortable"
+                hint="e.g. 20 for +20%, -10 for -10%"
+                persistent-hint
+                :error-messages="fieldError('magnitude')"
+              ></v-text-field>
+            </v-col>
+            <v-col cols="12" md="3">
+              <v-text-field
+                v-model.number="form.duration"
+                label="Duration (quarters)"
+                type="number"
+                min="1"
+                prepend-inner-icon="mdi-calendar-range"
+                variant="outlined"
+                density="comfortable"
+                hint="Minimum 1 quarter"
+                persistent-hint
+                :error-messages="fieldError('duration')"
+              ></v-text-field>
+            </v-col>
+            <v-col cols="12" md="2" class="d-flex align-center">
+              <v-btn
+                color="indigo"
+                :loading="loading"
+                :disabled="!form.variable || form.magnitude === null || form.magnitude === '' || !form.duration"
+                @click="submitScenario"
+                prepend-icon="mdi-play-circle"
+                block
+              >
+                Run Scenario
+              </v-btn>
+            </v-col>
+          </v-row>
+
+          <!-- Loading bar -->
+          <v-progress-linear v-if="loading" indeterminate color="indigo" class="mb-4"></v-progress-linear>
+
+          <!-- Validation / API errors -->
+          <v-alert v-if="errorMsg" type="error" variant="tonal" closable class="mb-4" @click:close="errorMsg=''">
+            {{ errorMsg }}
+          </v-alert>
+
+          <!-- Validation errors from 422 -->
+          <v-alert v-if="validationErrors.length" type="warning" variant="tonal" closable class="mb-4" @click:close="validationErrors=[]">
+            <div class="font-weight-bold mb-1">Validation Errors</div>
+            <ul class="pl-4">
+              <li v-for="(e, i) in validationErrors" :key="i">{{ e }}</li>
+            </ul>
+          </v-alert>
+
+          <!-- Empty state -->
+          <div v-if="!result && !loading && !errorMsg && !validationErrors.length" class="text-center text-grey py-10">
+            <v-icon size="56" class="mb-3">mdi-flask-outline</v-icon>
+            <div class="text-body-1">Define a shock above and click Run Scenario to see the trajectory comparison.</div>
+          </div>
+
+          <!-- Results -->
+          <div v-if="result">
+            <v-divider class="my-4"></v-divider>
+
+            <!-- Scenario summary chip row -->
+            <div class="d-flex flex-wrap gap-2 mb-4">
+              <v-chip color="indigo" variant="tonal" prepend-icon="mdi-variable">
+                {{ result.shock.variable }}
+              </v-chip>
+              <v-chip :color="result.shock.magnitude >= 0 ? 'green' : 'red'" variant="tonal" prepend-icon="mdi-plus-minus-variant">
+                {{ result.shock.magnitude >= 0 ? '+' : '' }}{{ result.shock.magnitude }}%
+              </v-chip>
+              <v-chip color="blue" variant="tonal" prepend-icon="mdi-calendar-range">
+                {{ result.shock.duration }} quarter{{ result.shock.duration !== 1 ? 's' : '' }}
+              </v-chip>
+              <v-chip color="grey" variant="tonal" prepend-icon="mdi-identifier">
+                Scenario #{{ result.scenario_id }}
+              </v-chip>
+            </div>
+
+            <!-- Charts: 3 sub-charts for inflation, GDP growth, unemployment -->
+            <div class="text-subtitle-1 font-weight-bold mb-3">
+              <v-icon class="mr-1" size="small">mdi-chart-line</v-icon>
+              Trajectory vs Counterfactual
+            </div>
+            <v-row>
+              <v-col cols="12" md="4" v-for="metric in chartMetrics" :key="metric.key">
+                <v-card variant="tonal" color="grey-lighten-4" class="pa-2">
+                  <div class="text-caption font-weight-bold text-center mb-1">{{ metric.label }}</div>
+                  <div style="position:relative;height:200px;">
+                    <canvas :ref="el => chartCanvases[metric.key] = el"></canvas>
+                  </div>
+                </v-card>
+              </v-col>
+            </v-row>
+
+            <!-- Delta table -->
+            <div class="text-subtitle-1 font-weight-bold mt-6 mb-3">
+              <v-icon class="mr-1" size="small">mdi-table</v-icon>
+              Delta: Shock vs Counterfactual per Period
+            </div>
+            <v-table density="compact" class="mb-6">
+              <thead>
+                <tr>
+                  <th>Period</th>
+                  <th>Inflation Δ</th>
+                  <th>GDP Growth Δ</th>
+                  <th>Unemployment Δ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, i) in deltaRows" :key="i">
+                  <td>Q{{ row.period }}</td>
+                  <td>
+                    <span :class="deltaClass(row.inflation_delta)">
+                      {{ formatDelta(row.inflation_delta) }}
+                    </span>
+                  </td>
+                  <td>
+                    <span :class="deltaClass(row.gdp_delta)">
+                      {{ formatDelta(row.gdp_delta) }}
+                    </span>
+                  </td>
+                  <td>
+                    <span :class="deltaClass(-row.unemployment_delta)">
+                      {{ formatDelta(row.unemployment_delta) }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+
+            <!-- Agent Narratives -->
+            <div class="text-subtitle-1 font-weight-bold mb-3">
+              <v-icon class="mr-1" size="small">mdi-account-group</v-icon>
+              Agent Narratives
+            </div>
+            <v-row>
+              <v-col
+                v-for="agent in result.agents"
+                :key="agent.agent_type"
+                cols="12"
+                md="6"
+              >
+                <v-card variant="tonal" :color="agentColor(agent.agent_type)" class="h-100">
+                  <v-card-title class="d-flex align-center pb-1">
+                    <v-icon :icon="agentIcon(agent.agent_type)" class="mr-2"></v-icon>
+                    {{ agent.agent_type }}
+                  </v-card-title>
+                  <v-card-text>
+                    <div class="text-subtitle-2 font-weight-bold mb-1">
+                      <v-icon size="small" class="mr-1">mdi-lightning-bolt</v-icon>Action
+                    </div>
+                    <v-chip color="indigo" variant="tonal" size="small" class="mb-2 text-wrap" style="height:auto;white-space:normal">
+                      {{ agent.action }}
+                    </v-chip>
+                    <div class="text-subtitle-2 font-weight-bold mb-1 mt-2">
+                      <v-icon size="small" class="mr-1">mdi-comment-text-outline</v-icon>Rationale
+                    </div>
+                    <p class="text-body-2 text-medium-emphasis">{{ agent.rationale }}</p>
+                  </v-card-text>
+                </v-card>
+              </v-col>
+            </v-row>
+          </div>
+
+        </v-card-text>
+      </v-card>
+    `,
+    setup() {
+      const form = reactive({ variable: null, magnitude: null, duration: null });
+      const loading = ref(false);
+      const errorMsg = ref('');
+      const validationErrors = ref([]);
+      const result = ref(null);
+      const chartCanvases = reactive({});
+      const chartInstances = {};
+
+      const recognizedVariables = RECOGNIZED_VARIABLES;
+
+      const chartMetrics = [
+        { key: 'inflation',    label: 'Inflation (%)',    color: '#E53935' },
+        { key: 'gdp_growth',   label: 'GDP Growth (%)',   color: '#43A047' },
+        { key: 'unemployment', label: 'Unemployment (%)', color: '#FB8C00' },
+      ];
+
+      const AGENT_ICONS = {
+        Household:   'mdi-home-account',
+        Firm:        'mdi-factory',
+        Bank:        'mdi-bank',
+        Policymaker: 'mdi-gavel',
+      };
+      const AGENT_COLORS = {
+        Household:   'blue',
+        Firm:        'green',
+        Bank:        'orange',
+        Policymaker: 'purple',
+      };
+
+      function agentIcon(type) { return AGENT_ICONS[type] || 'mdi-account'; }
+      function agentColor(type) { return AGENT_COLORS[type] || 'grey'; }
+
+      // Extract field-level errors from validationErrors for inline display
+      function fieldError(field) {
+        const match = validationErrors.value.find(e =>
+          e.toLowerCase().includes(field.toLowerCase())
+        );
+        return match ? [match] : [];
+      }
+
+      // Compute delta rows from trajectory vs counterfactual
+      const deltaRows = computed(() => {
+        if (!result.value) return [];
+        const traj = result.value.trajectory || [];
+        const cf = result.value.counterfactual || [];
+        return traj.map((t, i) => {
+          const c = cf[i] || {};
+          return {
+            period: t.period,
+            inflation_delta: (t.inflation ?? 0) - (c.inflation ?? 0),
+            gdp_delta: (t.gdp_growth ?? 0) - (c.gdp_growth ?? 0),
+            unemployment_delta: (t.unemployment ?? 0) - (c.unemployment ?? 0),
+          };
+        });
+      });
+
+      function formatDelta(val) {
+        if (val === null || val === undefined) return 'N/A';
+        const sign = val >= 0 ? '+' : '';
+        return sign + val.toFixed(2) + '%';
+      }
+
+      function deltaClass(val) {
+        // positive delta = green for good metrics (GDP), red for bad (inflation/unemployment)
+        // We use a neutral approach: positive = green, negative = red
+        if (val > 0) return 'text-green-darken-2 font-weight-medium';
+        if (val < 0) return 'text-red-darken-2 font-weight-medium';
+        return '';
+      }
+
+      function destroyCharts() {
+        for (const key of Object.keys(chartInstances)) {
+          if (chartInstances[key]) {
+            chartInstances[key].destroy();
+            delete chartInstances[key];
+          }
+        }
+      }
+
+      function renderCharts() {
+        destroyCharts();
+        if (!result.value) return;
+        const traj = result.value.trajectory || [];
+        const cf = result.value.counterfactual || [];
+        const labels = traj.map(t => 'Q' + t.period);
+
+        for (const metric of chartMetrics) {
+          const canvas = chartCanvases[metric.key];
+          if (!canvas) continue;
+          const ctx = canvas.getContext('2d');
+
+          const shockData = traj.map(t => t[metric.key] ?? null);
+          const cfData = cf.map(c => c[metric.key] ?? null);
+
+          chartInstances[metric.key] = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: 'Shock',
+                  data: shockData,
+                  borderColor: metric.color,
+                  backgroundColor: metric.color,
+                  borderWidth: 2,
+                  pointRadius: 4,
+                  tension: 0.3,
+                },
+                {
+                  label: 'Counterfactual',
+                  data: cfData,
+                  borderColor: '#9E9E9E',
+                  backgroundColor: '#9E9E9E',
+                  borderWidth: 2,
+                  borderDash: [6, 3],
+                  pointRadius: 4,
+                  tension: 0.3,
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+                tooltip: { mode: 'index', intersect: false }
+              },
+              scales: {
+                x: { ticks: { font: { size: 10 } } },
+                y: { ticks: { font: { size: 10 } }, title: { display: true, text: '%', font: { size: 10 } } }
+              }
+            }
+          });
+        }
+      }
+
+      async function submitScenario() {
+        loading.value = true;
+        errorMsg.value = '';
+        validationErrors.value = [];
+        result.value = null;
+        destroyCharts();
+
+        try {
+          const body = {
+            variable: form.variable,
+            magnitude: Number(form.magnitude),
+            duration: Number(form.duration),
+          };
+          const res = await fetch('/api/scenarios', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+
+          if (res.status === 422) {
+            const data = await res.json();
+            // Parse Pydantic validation errors
+            const detail = data.detail;
+            if (Array.isArray(detail)) {
+              validationErrors.value = detail.map(e => {
+                const loc = (e.loc || []).slice(1).join(' → ');
+                return loc ? loc + ': ' + e.msg : e.msg;
+              });
+            } else if (typeof detail === 'string') {
+              validationErrors.value = [detail];
+            } else {
+              validationErrors.value = ['Validation error. Please check your inputs.'];
+            }
+            return;
+          }
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            errorMsg.value = (data.detail || data.message || 'Failed to run scenario (HTTP ' + res.status + ')');
+            return;
+          }
+
+          const data = await res.json();
+          result.value = data;
+
+          // Render charts after DOM updates
+          await nextTick();
+          renderCharts();
+
+        } catch (e) {
+          errorMsg.value = e.message || 'Network error. Please try again.';
+        } finally {
+          loading.value = false;
+        }
+      }
+
+      return {
+        form, loading, errorMsg, validationErrors, result,
+        recognizedVariables, chartMetrics, chartCanvases, deltaRows,
+        agentIcon, agentColor, fieldError, formatDelta, deltaClass,
+        submitScenario,
+      };
+    }
+  };
+
+  const AlertFeed = {
+    template: `
+      <v-card class="ma-4 pa-6" variant="outlined">
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2">mdi-bell-alert</v-icon>
+          Alert Feed
+          <v-spacer></v-spacer>
+          <v-btn
+            color="indigo"
+            variant="tonal"
+            size="small"
+            :loading="loading"
+            @click="fetchAlerts"
+            prepend-icon="mdi-refresh"
+          >
+            Refresh
+          </v-btn>
+        </v-card-title>
+        <v-card-text>
+          <v-progress-linear v-if="loading" indeterminate color="indigo" class="mb-4"></v-progress-linear>
+
+          <v-alert v-if="errorMsg" type="error" variant="tonal" closable class="mb-4" @click:close="errorMsg=''">
+            {{ errorMsg }}
+          </v-alert>
+
+          <!-- Empty state -->
+          <div v-if="!loading && alerts.length === 0 && !errorMsg" class="text-center text-grey py-10">
+            <v-icon size="56" class="mb-3">mdi-bell-off-outline</v-icon>
+            <div class="text-body-1 mb-4">No alerts have been generated.</div>
+            <div class="text-body-2 text-grey-darken-1" style="max-width:500px;margin:0 auto;">
+              Alerts are triggered automatically when newly ingested indicator data falls outside
+              forecast confidence bands (p10/p90). To generate alerts: first view a forecast in
+              Trends to create the bands, then re-ingest data. Any observation outside the bands
+              will appear here with severity and an explanation.
+            </div>
+          </div>
+
+          <!-- Alert list -->
+          <v-list v-if="alerts.length > 0" lines="three">
+            <template v-for="(alert, idx) in alerts" :key="alert.id">
+              <v-list-item class="px-0">
+                <template v-slot:prepend>
+                  <v-icon
+                    :color="alert.severity === 'critical' ? 'red' : 'orange'"
+                    size="large"
+                  >
+                    {{ alert.severity === 'critical' ? 'mdi-alert-circle' : 'mdi-alert' }}
+                  </v-icon>
+                </template>
+                <v-list-item-title class="d-flex align-center flex-wrap ga-2 mb-1">
+                  <span class="font-weight-bold">{{ alert.indicator_id }}</span>
+                  <v-chip
+                    :color="alert.severity === 'critical' ? 'red' : 'orange'"
+                    size="x-small"
+                    variant="flat"
+                    class="text-uppercase font-weight-bold"
+                  >
+                    {{ alert.severity }}
+                  </v-chip>
+                  <v-chip size="x-small" variant="tonal" color="grey" prepend-icon="mdi-clock-outline">
+                    {{ formatTimestamp(alert.created_at) }}
+                  </v-chip>
+                </v-list-item-title>
+                <v-list-item-subtitle class="mt-1" style="white-space:normal;-webkit-line-clamp:unset;">
+                  <div class="d-flex flex-wrap ga-2 mb-2">
+                    <v-chip size="x-small" variant="tonal" color="blue" prepend-icon="mdi-eye">
+                      Observed: {{ formatNum(alert.observed_value) }}
+                    </v-chip>
+                    <v-chip size="x-small" variant="tonal" color="teal" prepend-icon="mdi-arrow-down-bold">
+                      p10: {{ formatNum(alert.p10_value) }}
+                    </v-chip>
+                    <v-chip size="x-small" variant="tonal" color="teal" prepend-icon="mdi-arrow-up-bold">
+                      p90: {{ formatNum(alert.p90_value) }}
+                    </v-chip>
+                  </div>
+                  <p v-if="alert.narrative" class="text-body-2 mb-2">{{ alert.narrative }}</p>
+                  <div v-if="alert.driver_attribution && alert.driver_attribution.length" class="mt-1">
+                    <span class="text-caption font-weight-bold">Drivers:</span>
+                    <ul class="text-caption pl-4 mt-1">
+                      <li v-for="(driver, di) in alert.driver_attribution" :key="di">
+                        {{ typeof driver === 'string' ? driver : (driver.feature_name || driver.name || JSON.stringify(driver)) }}
+                        <span v-if="driver.importance_score != null" class="text-grey"> ({{ driver.importance_score.toFixed(3) }})</span>
+                      </li>
+                    </ul>
+                  </div>
+                </v-list-item-subtitle>
+              </v-list-item>
+              <v-divider v-if="idx < alerts.length - 1" class="my-2"></v-divider>
+            </template>
+          </v-list>
+        </v-card-text>
+      </v-card>
+    `,
+    setup() {
+      const loading = ref(false);
+      const errorMsg = ref('');
+      const alerts = ref([]);
+
+      function formatNum(val) {
+        if (val === null || val === undefined) return 'N/A';
+        return Number(val).toFixed(2);
+      }
+
+      function formatTimestamp(ts) {
+        if (!ts) return '';
+        try {
+          const d = new Date(ts);
+          return d.toLocaleString();
+        } catch { return ts; }
+      }
+
+      async function fetchAlerts() {
+        loading.value = true;
+        errorMsg.value = '';
+        try {
+          const res = await fetch('/api/alerts');
+          if (!res.ok) throw new Error('Failed to fetch alerts (HTTP ' + res.status + ')');
+          const data = await res.json();
+          const raw = data.alerts || [];
+          // Parse driver_attribution from JSON string if needed
+          alerts.value = raw.map(a => ({
+            ...a,
+            driver_attribution: parseDrivers(a.driver_attribution),
+          }));
+        } catch (e) {
+          errorMsg.value = e.message || 'Error loading alerts';
+        } finally {
+          loading.value = false;
+        }
+      }
+
+      function parseDrivers(val) {
+        if (!val) return null;
+        if (Array.isArray(val)) return val;
+        if (typeof val === 'string') {
+          try { return JSON.parse(val); } catch { return null; }
+        }
+        return null;
+      }
+
+      onMounted(() => {
+        fetchAlerts();
+      });
+
+      return { loading, errorMsg, alerts, fetchAlerts, formatNum, formatTimestamp };
+    }
+  };
+
+  // -----------------------------------------------------------------------
+  // About Page
+  // -----------------------------------------------------------------------
+
+  const AboutPage = {
+    template: `
+      <v-container>
+        <v-row justify="center">
+          <v-col cols="12" md="10" lg="8">
+
+            <!-- Intro / Demo Speech -->
+            <v-card class="mb-6" variant="outlined">
+              <v-card-title class="d-flex align-center">
+                <v-icon class="mr-2" color="indigo">mdi-chart-timeline-variant-shimmer</v-icon>
+                Economic Digital Twin Dashboard
+              </v-card-title>
+              <v-card-text class="text-body-1">
+                <p class="mb-3">
+                  Most economic forecasting tools show you curves and numbers — but they never explain
+                  <em>why</em> the economy is moving the way it is. This app changes that.
+                </p>
+                <p class="mb-3">
+                  We built an <strong>Economic Digital Twin</strong> — a simulation where AI-powered agents
+                  representing households, firms, banks, and policymakers react to real economic data and
+                  user-defined shocks in real time. When you inject a shock like "energy prices +20%," you
+                  don't just see the forecast change — you watch the <em>mechanism</em> unfold: firms raise
+                  prices, households cut spending, banks tighten credit, and policymakers adjust rates.
+                  Each agent explains its reasoning in plain language.
+                </p>
+                <p class="mb-3">
+                  The system combines <strong>official FRED/BEA data</strong>, <strong>probabilistic forecasting</strong>
+                  with confidence bands, <strong>LLM-empowered agent simulation</strong> via AWS Bedrock Claude,
+                  and <strong>counterfactual analysis</strong> so you can compare "what happened" vs "what would
+                  have happened without the shock."
+                </p>
+                <p class="mb-0">
+                  Alerts fire automatically when real data deviates from forecasts, complete with driver
+                  attribution and narrative explanations. Everything traces back to official data sources —
+                  fully auditable, fully explainable.
+                </p>
+              </v-card-text>
+            </v-card>
+
+            <!-- User Guide -->
+            <v-card variant="outlined">
+              <v-card-title class="d-flex align-center">
+                <v-icon class="mr-2" color="indigo">mdi-book-open-variant</v-icon>
+                User Guide
+              </v-card-title>
+              <v-card-text>
+
+                <div class="text-h6 mb-2">
+                  <v-icon class="mr-1" size="small">mdi-chart-line</v-icon>
+                  1. Trends &amp; Forecasts
+                </div>
+                <p class="text-body-2 mb-1">View historical economic data with probabilistic forecasts.</p>
+                <ul class="text-body-2 mb-4 pl-4">
+                  <li>Select an indicator from the dropdown (CPI, Unemployment, Fed Funds Rate, 10Y Treasury).</li>
+                  <li>Use the <strong>1Y / 5Y / 10Y / All</strong> buttons to zoom into a time range.</li>
+                  <li>Toggle the <strong>p10/p90 bands</strong> switch to show or hide confidence intervals.</li>
+                  <li>Below the chart, read the AI-generated explanation of what's driving the forecast.</li>
+                  <li>The feature importance table shows which indicators correlate most with the forecast.</li>
+                </ul>
+
+                <v-divider class="mb-4"></v-divider>
+
+                <div class="text-h6 mb-2">
+                  <v-icon class="mr-1" size="small">mdi-flask</v-icon>
+                  2. Scenario Studio
+                </div>
+                <p class="text-body-2 mb-1">Define economic shocks and see how the economy responds.</p>
+                <ul class="text-body-2 mb-4 pl-4">
+                  <li>Pick a <strong>shock variable</strong> (e.g., energy_price, interest_rate, oil_price).</li>
+                  <li>Set the <strong>magnitude</strong> (e.g., +20 for a 20% increase, -10 for a 10% decrease).</li>
+                  <li>Set the <strong>duration</strong> in quarters (e.g., 2 for two quarters).</li>
+                  <li>Click <strong>Run Scenario</strong> — the system simulates agent responses and generates trajectories.</li>
+                  <li>Compare the <strong>shock trajectory</strong> (colored lines) vs the <strong>counterfactual</strong> (grey dashed) across inflation, GDP growth, and unemployment.</li>
+                  <li>The delta table shows the exact difference per period.</li>
+                  <li>Agent narratives at the bottom explain the mechanism behind the changes.</li>
+                </ul>
+
+                <v-divider class="mb-4"></v-divider>
+
+                <div class="text-h6 mb-2">
+                  <v-icon class="mr-1" size="small">mdi-account-group</v-icon>
+                  3. Agent Theater
+                </div>
+                <p class="text-body-2 mb-1">Inspect what each economic agent is thinking and doing.</p>
+                <ul class="text-body-2 mb-4 pl-4">
+                  <li>Select a scenario from the dropdown (populated from scenarios you've run).</li>
+                  <li>Four agent cards appear: <strong>Household, Firm, Bank, Policymaker</strong>.</li>
+                  <li>Each card shows the agent's <strong>beliefs</strong> (what it thinks about the economy), <strong>action</strong> (what it decided to do), and <strong>rationale</strong> (why, referencing real data).</li>
+                  <li>If no scenarios exist, click "Go to Scenario Studio" to create one.</li>
+                </ul>
+
+                <v-divider class="mb-4"></v-divider>
+
+                <div class="text-h6 mb-2">
+                  <v-icon class="mr-1" size="small">mdi-bell-alert</v-icon>
+                  4. Alert Feed
+                </div>
+                <p class="text-body-2 mb-1">Monitor anomalies when real data deviates from forecasts.</p>
+                <ul class="text-body-2 mb-4 pl-4">
+                  <li>Alerts are generated automatically when newly ingested data falls outside forecast confidence bands (p10/p90).</li>
+                  <li>Each alert shows the <strong>indicator</strong>, <strong>observed value</strong>, <strong>forecast bands</strong>, <strong>severity</strong> (warning or critical), and a <strong>narrative explanation</strong>.</li>
+                  <li>To trigger alerts: first view a forecast in Trends (creates the bands), then re-ingest data.</li>
+                  <li>Click <strong>Refresh</strong> to check for new alerts.</li>
+                </ul>
+
+                <v-divider class="mb-4"></v-divider>
+
+                <div class="text-h6 mb-2">
+                  <v-icon class="mr-1" size="small">mdi-database</v-icon>
+                  5. Data Sources
+                </div>
+                <p class="text-body-2 mb-0">
+                  All economic data comes from official sources: <strong>FRED</strong> (Federal Reserve Economic Data)
+                  for CPI, unemployment, interest rates, and treasury yields; <strong>BEA</strong> (Bureau of Economic Analysis)
+                  for GDP data. Agent cognition is powered by <strong>AWS Bedrock Claude</strong>.
+                </p>
+
+              </v-card-text>
+            </v-card>
+
+          </v-col>
+        </v-row>
+      </v-container>
+    `
+  };
+
+  // -----------------------------------------------------------------------
+  // Router
+  // -----------------------------------------------------------------------
+
+  const routes = [
+    { path: '/',          name: 'trends',    component: TrendsView },
+    { path: '/agents',    name: 'agents',    component: AgentTheater },
+    { path: '/scenarios', name: 'scenarios', component: ScenarioStudio },
+    { path: '/alerts',    name: 'alerts',    component: AlertFeed },
+    { path: '/about',     name: 'about',     component: AboutPage },
+  ];
+
+  const router = createRouter({
+    history: createWebHashHistory(),
+    routes,
+  });
+
+  // -----------------------------------------------------------------------
+  // App
+  // -----------------------------------------------------------------------
+
+  const vuetify = createVuetify({
+    theme: {
+      defaultTheme: 'light',
+    },
+  });
+
+  const appInstance = createApp({
+    setup() {
+      const navLinks = [
+        { path: '/',          label: 'Trends',          icon: 'mdi-chart-line' },
+        { path: '/agents',    label: 'Agent Theater',   icon: 'mdi-account-group' },
+        { path: '/scenarios', label: 'Scenario Studio', icon: 'mdi-flask' },
+        { path: '/alerts',    label: 'Alert Feed',      icon: 'mdi-bell-alert' },
+        { path: '/about',     label: 'About',           icon: 'mdi-information' },
+      ];
+      return { navLinks };
+    }
+  });
+
+  appInstance.use(router);
+  appInstance.use(vuetify);
+  appInstance.mount('#app');
+  </script>
+</body>
+</html>
