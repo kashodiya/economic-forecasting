@@ -1099,21 +1099,30 @@ async def invoke_agent(agent_type: str, context: dict) -> dict:
     Raises:
         Exception: If the Bedrock call fails (caller handles fallback).
     """
+    import asyncio
+    from botocore.config import Config
+
     prompt = _build_agent_prompt(agent_type, context)
 
-    bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-    response = bedrock.invoke_model(
-        modelId=BEDROCK_MODEL_ID,
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,
-            "messages": [{"role": "user", "content": prompt}],
-        }),
-        contentType="application/json",
-    )
-    result = json.loads(response["body"].read())
-    text = result["content"][0]["text"]
+    def _call_bedrock():
+        bedrock = boto3.client(
+            "bedrock-runtime",
+            region_name=AWS_REGION,
+            config=Config(read_timeout=30, connect_timeout=5, retries={"max_attempts": 1}),
+        )
+        response = bedrock.invoke_model(
+            modelId=BEDROCK_MODEL_ID,
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt}],
+            }),
+            contentType="application/json",
+        )
+        result = json.loads(response["body"].read())
+        return result["content"][0]["text"]
 
+    text = await asyncio.to_thread(_call_bedrock)
     parsed = _parse_llm_json(text)
 
     # Ensure required keys are present with sensible defaults
@@ -1370,9 +1379,10 @@ async def run_simulation(shock: dict, current_indicators: dict) -> dict:
 
         context = {"indicators": indicators, "shock": shock}
 
-        # 2. Query each agent in order
-        agent_results = []
-        for agent_type in _AGENT_ORDER:
+        # 2. Query all agents in parallel for speed
+        import asyncio
+
+        async def _call_agent(agent_type):
             try:
                 response = await invoke_agent(agent_type, context)
             except Exception as exc:  # noqa: BLE001
@@ -1381,13 +1391,14 @@ async def run_simulation(shock: dict, current_indicators: dict) -> dict:
                     agent_type, period, exc,
                 )
                 response = _fallback_agent_response(agent_type, shock)
-
-            agent_results.append({
+            return {
                 "agent_type": agent_type,
                 "beliefs": response.get("beliefs", {}),
                 "action": response.get("action", ""),
                 "rationale": response.get("rationale", ""),
-            })
+            }
+
+        agent_results = await asyncio.gather(*[_call_agent(at) for at in _AGENT_ORDER])
 
         # 3. Aggregate macro outcomes
         macro = _aggregate_macro_outcomes(agent_results, indicators, shock)
