@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Semantic Delta</title>
+  <!-- Vuetify CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@3/dist/vuetify.min.css" rel="stylesheet" />
+  <!-- Material Design Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font/css/materialdesignicons.min.css" rel="stylesheet" />
+  <style>
+    [v-cloak] { display: none; }
+    .direction-chip-up { color: #4caf50 !important; }
+    .direction-chip-down { color: #f44336 !important; }
+    .direction-chip-unchanged { color: #9e9e9e !important; }
+    .direction-chip-initial { color: #2196f3 !important; }
+  </style>
+</head>
+<body>
+  <div id="app" v-cloak>
+    <v-app>
+      <!-- Navigation Drawer -->
+      <v-navigation-drawer v-model="drawer" app>
+        <v-list-item prepend-icon="mdi-delta" title="Semantic Delta" subtitle="Economic Forecast Engine"></v-list-item>
+        <v-divider></v-divider>
+        <v-list density="compact" nav>
+          <v-list-item v-for="link in navLinks" :key="link.path"
+                       :to="link.path" :prepend-icon="link.icon" :title="link.label">
+          </v-list-item>
+        </v-list>
+      </v-navigation-drawer>
+
+      <!-- App Bar -->
+      <v-app-bar color="blue-grey-darken-4" density="comfortable">
+        <v-app-bar-nav-icon @click="drawer = !drawer"></v-app-bar-nav-icon>
+        <v-app-bar-title>
+          <v-icon class="mr-1">mdi-delta</v-icon>
+          Semantic Delta
+        </v-app-bar-title>
+        <template v-slot:append>
+          <v-btn variant="tonal" color="light-blue" :loading="pipelineRunning" @click="runPipeline">
+            <v-icon start>mdi-play-circle</v-icon>
+            Run Pipeline
+          </v-btn>
+        </template>
+      </v-app-bar>
+
+      <!-- Main Content -->
+      <v-main>
+        <v-container fluid>
+          <router-view></router-view>
+        </v-container>
+      </v-main>
+
+      <!-- Pipeline Snackbar -->
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="5000" location="bottom right">
+        {{ snackbar.text }}
+        <template v-slot:actions>
+          <v-btn variant="text" @click="snackbar.show = false">Close</v-btn>
+        </template>
+      </v-snackbar>
+    </v-app>
+  </div>
+
+  <!-- Vue 3 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <!-- Vue Router 4 -->
+  <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
+  <!-- Vuetify 3 -->
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@3/dist/vuetify.min.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+  const { createApp, ref, reactive, computed, onMounted, watch, nextTick, onBeforeUnmount } = Vue;
+  const { createRouter, createWebHashHistory } = VueRouter;
+  const { createVuetify } = Vuetify;
+
+  // =====================================================================
+  // Helper: direction chip props
+  // =====================================================================
+  function directionColor(dir) {
+    if (dir === 'up') return 'green';
+    if (dir === 'down') return 'red';
+    if (dir === 'initial') return 'blue';
+    return 'grey';
+  }
+  function directionIcon(dir) {
+    if (dir === 'up') return 'mdi-arrow-up-bold';
+    if (dir === 'down') return 'mdi-arrow-down-bold';
+    if (dir === 'initial') return 'mdi-star';
+    return 'mdi-minus';
+  }
+
+  // =====================================================================
+  // 9.2 — Indicators View
+  // =====================================================================
+  const IndicatorsView = {
+    template: `
+      <div>
+        <v-card class="ma-2" variant="outlined">
+          <v-card-title>
+            <v-icon class="mr-2">mdi-chart-bar</v-icon>
+            Economic Indicators
+            <v-btn icon="mdi-refresh" variant="text" size="small" class="ml-2" :loading="loading" @click="fetchIndicators"></v-btn>
+          </v-card-title>
+          <v-card-text>
+            <!-- Empty state -->
+            <v-alert v-if="!loading && indicators.length === 0" type="info" variant="tonal" class="mb-4">
+              No indicators found. Click <strong>Run Pipeline</strong> in the app bar to ingest data from FRED and BEA.
+            </v-alert>
+
+            <!-- Indicators table -->
+            <v-table v-if="indicators.length > 0" hover density="comfortable">
+              <thead>
+                <tr>
+                  <th>Series ID</th>
+                  <th>Source</th>
+                  <th class="text-right">Latest Value</th>
+                  <th>Latest Date</th>
+                  <th>Direction</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="ind in indicators" :key="ind.series_id"
+                    style="cursor:pointer" @click="openDetail(ind)">
+                  <td><strong>{{ ind.series_id }}</strong></td>
+                  <td>{{ ind.source }}</td>
+                  <td class="text-right">{{ formatNum(ind.latest_value) }}</td>
+                  <td>{{ ind.latest_date }}</td>
+                  <td>
+                    <v-chip v-if="ind.direction" :color="dirColor(ind.direction)" size="small" label>
+                      <v-icon start size="x-small">{{ dirIcon(ind.direction) }}</v-icon>
+                      {{ ind.direction }}
+                    </v-chip>
+                    <span v-else class="text-grey">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+          </v-card-text>
+        </v-card>
+
+        <!-- Detail Dialog -->
+        <v-dialog v-model="detailDialog" max-width="800">
+          <v-card>
+            <v-card-title>
+              <v-icon class="mr-2">mdi-chart-line</v-icon>
+              {{ detailIndicator ? detailIndicator.series_id : '' }} — Time Series
+              <v-spacer></v-spacer>
+              <v-btn icon="mdi-close" variant="text" size="small" @click="detailDialog = false"></v-btn>
+            </v-card-title>
+            <v-card-text>
+              <v-progress-linear v-if="detailLoading" indeterminate color="blue"></v-progress-linear>
+              <div v-else>
+                <canvas ref="detailChartCanvas" height="300"></canvas>
+              </div>
+            </v-card-text>
+          </v-card>
+        </v-dialog>
+      </div>
+    `,
+    setup() {
+      const indicators = ref([]);
+      const loading = ref(false);
+      const detailDialog = ref(false);
+      const detailIndicator = ref(null);
+      const detailLoading = ref(false);
+      const detailChartCanvas = ref(null);
+      let chartInstance = null;
+
+      function dirColor(d) { return directionColor(d); }
+      function dirIcon(d) { return directionIcon(d); }
+      function formatNum(v) { return v != null ? Number(v).toLocaleString(undefined, {maximumFractionDigits: 2}) : '—'; }
+
+      async function fetchIndicators() {
+        loading.value = true;
+        try {
+          const resp = await fetch('/api/indicators');
+          indicators.value = await resp.json();
+        } catch (e) { console.error(e); }
+        loading.value = false;
+      }
+
+      async function openDetail(ind) {
+        detailIndicator.value = ind;
+        detailDialog.value = true;
+        detailLoading.value = true;
+        try {
+          // Fetch observations for this series from deltas endpoint or directly
+          // We'll use a simple approach: fetch all observations via a custom query
+          // Since there's no dedicated endpoint, we use the indicator data we have
+          // and fetch forecast data for the chart
+          const resp = await fetch('/api/forecast/' + encodeURIComponent(ind.series_id));
+          let forecastData = null;
+          if (resp.ok) forecastData = await resp.json();
+
+          detailLoading.value = false;
+          await nextTick();
+
+          if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+          if (!detailChartCanvas.value) return;
+
+          const labels = [];
+          const values = [];
+          if (forecastData && forecastData.periods) {
+            forecastData.periods.forEach(p => {
+              labels.push(p.period_date);
+              values.push(p.point_value);
+            });
+          }
+
+          if (labels.length === 0) {
+            // No forecast data — show a message
+            const ctx = detailChartCanvas.value.getContext('2d');
+            ctx.fillStyle = '#aaa';
+            ctx.font = '16px sans-serif';
+            ctx.fillText('No forecast data available. Run the pipeline first.', 20, 80);
+            return;
+          }
+
+          chartInstance = new Chart(detailChartCanvas.value, {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [{
+                label: ind.series_id + ' Forecast',
+                data: values,
+                borderColor: '#42a5f5',
+                backgroundColor: 'rgba(66,165,245,0.1)',
+                fill: true,
+                tension: 0.3,
+              }]
+            },
+            options: {
+              responsive: true,
+              plugins: { legend: { labels: { color: '#ccc' } } },
+              scales: {
+                x: { ticks: { color: '#aaa' }, grid: { color: '#333' } },
+                y: { ticks: { color: '#aaa' }, grid: { color: '#333' } }
+              }
+            }
+          });
+        } catch (e) {
+          console.error(e);
+          detailLoading.value = false;
+        }
+      }
+
+      onMounted(fetchIndicators);
+      onBeforeUnmount(() => { if (chartInstance) chartInstance.destroy(); });
+
+      return { indicators, loading, detailDialog, detailIndicator, detailLoading, detailChartCanvas,
+               fetchIndicators, openDetail, dirColor, dirIcon, formatNum };
+    }
+  };
+
+  // =====================================================================
+  // 9.3 — Deltas View
+  // =====================================================================
+  const DeltasView = {
+    template: `
+      <div>
+        <v-card class="ma-2" variant="outlined">
+          <v-card-title>
+            <v-icon class="mr-2">mdi-swap-vertical</v-icon>
+            Semantic Deltas
+            <v-btn icon="mdi-refresh" variant="text" size="small" class="ml-2" :loading="loading" @click="fetchDeltas"></v-btn>
+          </v-card-title>
+          <v-card-text>
+            <v-alert v-if="!loading && deltas.length === 0" type="info" variant="tonal">
+              No deltas computed yet. Run the pipeline to ingest data and compute deltas.
+            </v-alert>
+
+            <v-expansion-panels v-if="deltas.length > 0" variant="accordion">
+              <v-expansion-panel v-for="d in deltas" :key="d.id">
+                <v-expansion-panel-title>
+                  <v-row no-gutters align="center">
+                    <v-col cols="3">
+                      <strong>{{ d.series_id }}</strong>
+                    </v-col>
+                    <v-col cols="2">
+                      {{ d.vintage_date_new }}
+                    </v-col>
+                    <v-col cols="2" class="text-right">
+                      {{ d.magnitude != null ? d.magnitude.toFixed(2) : '—' }}
+                    </v-col>
+                    <v-col cols="2" class="text-center">
+                      <v-chip :color="dirColor(d.direction)" size="small" label>
+                        <v-icon start size="x-small">{{ dirIcon(d.direction) }}</v-icon>
+                        {{ d.direction }}
+                      </v-chip>
+                    </v-col>
+                    <v-col cols="3" class="text-truncate text-grey">
+                      {{ truncate(d.driver_explanation, 60) }}
+                    </v-col>
+                  </v-row>
+                </v-expansion-panel-title>
+                <v-expansion-panel-text>
+                  <div class="mb-3">
+                    <div class="text-subtitle-2 mb-1">Driver Explanation</div>
+                    <div>{{ d.driver_explanation }}</div>
+                  </div>
+                  <v-divider class="mb-3"></v-divider>
+                  <v-row dense>
+                    <v-col cols="6" md="3">
+                      <div class="text-caption text-grey">Old Vintage</div>
+                      <div>{{ d.vintage_date_old || 'N/A (initial)' }}</div>
+                    </v-col>
+                    <v-col cols="6" md="3">
+                      <div class="text-caption text-grey">New Vintage</div>
+                      <div>{{ d.vintage_date_new }}</div>
+                    </v-col>
+                    <v-col cols="6" md="3">
+                      <div class="text-caption text-grey">Confidence</div>
+                      <div>{{ d.confidence_score != null ? d.confidence_score.toFixed(2) : '—' }}</div>
+                    </v-col>
+                    <v-col cols="6" md="3">
+                      <div class="text-caption text-grey">LLM Validated</div>
+                      <v-icon :color="d.is_llm_validated ? 'green' : 'orange'" size="small">
+                        {{ d.is_llm_validated ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                      </v-icon>
+                      {{ d.is_llm_validated ? 'Yes' : 'Template' }}
+                    </v-col>
+                  </v-row>
+
+                  <!-- Narrative if available -->
+                  <div v-if="narrativesMap[d.id]" class="mt-4">
+                    <v-divider class="mb-3"></v-divider>
+                    <div class="text-subtitle-2 mb-1">
+                      <v-icon size="small" class="mr-1">mdi-text-box</v-icon>
+                      Narrative
+                    </div>
+                    <div class="text-body-2">{{ narrativesMap[d.id].narrative_text }}</div>
+                    <div v-if="narrativesMap[d.id].evidence_links && narrativesMap[d.id].evidence_links.length" class="mt-2">
+                      <v-chip v-for="(link, i) in narrativesMap[d.id].evidence_links" :key="i"
+                              size="x-small" variant="outlined" color="blue" class="mr-1 mb-1">
+                        {{ link.source }}:{{ link.series_id }} {{ link.date }}
+                      </v-chip>
+                    </div>
+                  </div>
+                </v-expansion-panel-text>
+              </v-expansion-panel>
+            </v-expansion-panels>
+          </v-card-text>
+        </v-card>
+      </div>
+    `,
+    setup() {
+      const deltas = ref([]);
+      const narrativesMap = ref({});
+      const loading = ref(false);
+
+      function dirColor(d) { return directionColor(d); }
+      function dirIcon(d) { return directionIcon(d); }
+      function truncate(s, n) { return s && s.length > n ? s.substring(0, n) + '...' : (s || ''); }
+
+      async function fetchDeltas() {
+        loading.value = true;
+        try {
+          const resp = await fetch('/api/deltas');
+          deltas.value = await resp.json();
+
+          // Fetch narratives to map by delta_id
+          const nResp = await fetch('/api/narratives');
+          const narratives = await nResp.json();
+          const map = {};
+          narratives.forEach(n => { if (n.delta_id) map[n.delta_id] = n; });
+          narrativesMap.value = map;
+        } catch (e) { console.error(e); }
+        loading.value = false;
+      }
+
+      onMounted(fetchDeltas);
+
+      return { deltas, narrativesMap, loading, fetchDeltas, dirColor, dirIcon, truncate };
+    }
+  };
+
+  // =====================================================================
+  // 10.1 — Forecasts View
+  // =====================================================================
+  const ForecastsView = {
+    template: `
+      <div>
+        <v-card class="ma-2" variant="outlined">
+          <v-card-title>
+            <v-icon class="mr-2">mdi-chart-timeline-variant</v-icon>
+            Forecasts
+          </v-card-title>
+          <v-card-text>
+            <v-row>
+              <v-col cols="12" md="4">
+                <v-select
+                  v-model="selectedIndicator"
+                  :items="indicatorIds"
+                  label="Select Indicator"
+                  prepend-inner-icon="mdi-magnify"
+                  variant="outlined"
+                  density="comfortable"
+                  clearable
+                  :loading="loadingIndicators"
+                  @update:model-value="onIndicatorChange"
+                ></v-select>
+              </v-col>
+            </v-row>
+
+            <v-alert v-if="!selectedIndicator && !loadingIndicators" type="info" variant="tonal" class="mb-4">
+              Select an indicator above to view its forecast chart.
+            </v-alert>
+
+            <v-progress-linear v-if="loadingForecast" indeterminate color="blue" class="mb-4"></v-progress-linear>
+
+            <v-alert v-if="forecastError" type="warning" variant="tonal" class="mb-4">
+              {{ forecastError }}
+            </v-alert>
+
+            <div v-if="forecastData && !loadingForecast">
+              <div style="position:relative; height:350px;">
+                <canvas ref="forecastCanvas"></canvas>
+              </div>
+              <v-row dense class="mt-3">
+                <v-col cols="auto">
+                  <v-chip size="small" color="blue-grey" label>Model: {{ forecastData.model_type }}</v-chip>
+                </v-col>
+                <v-col cols="auto">
+                  <v-chip size="small" color="blue-grey" label>Date: {{ forecastData.forecast_date }}</v-chip>
+                </v-col>
+              </v-row>
+            </div>
+
+            <!-- Narrative -->
+            <v-card v-if="narrative" variant="tonal" color="blue-grey-darken-3" class="mt-4 pa-3">
+              <div class="text-subtitle-2 mb-1">
+                <v-icon size="small" class="mr-1">mdi-text-box</v-icon>
+                Forecast Narrative
+              </div>
+              <div class="text-body-2">{{ narrative.narrative_text }}</div>
+              <div v-if="narrative.evidence_links && narrative.evidence_links.length" class="mt-2">
+                <v-chip v-for="(link, i) in narrative.evidence_links" :key="i"
+                        size="x-small" variant="outlined" color="light-blue" class="mr-1">
+                  {{ link.source }}:{{ link.series_id }} {{ link.date }}
+                </v-chip>
+              </div>
+            </v-card>
+          </v-card-text>
+        </v-card>
+      </div>
+    `,
+    setup() {
+      const indicatorIds = ref([]);
+      const selectedIndicator = ref(null);
+      const loadingIndicators = ref(false);
+      const loadingForecast = ref(false);
+      const forecastData = ref(null);
+      const forecastError = ref('');
+      const narrative = ref(null);
+      const forecastCanvas = ref(null);
+      let chartInstance = null;
+
+      async function fetchIndicatorIds() {
+        loadingIndicators.value = true;
+        try {
+          const resp = await fetch('/api/indicators');
+          const data = await resp.json();
+          indicatorIds.value = data.map(d => d.series_id);
+        } catch (e) { console.error(e); }
+        loadingIndicators.value = false;
+      }
+
+      async function onIndicatorChange(val) {
+        forecastData.value = null;
+        forecastError.value = '';
+        narrative.value = null;
+        if (!val) return;
+
+        loadingForecast.value = true;
+        try {
+          const resp = await fetch('/api/forecast/' + encodeURIComponent(val));
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            forecastError.value = err.detail || 'No forecast available for this indicator.';
+            loadingForecast.value = false;
+            return;
+          }
+          forecastData.value = await resp.json();
+
+          // Fetch narrative for this indicator
+          const nResp = await fetch('/api/narratives?indicator_id=' + encodeURIComponent(val));
+          if (nResp.ok) {
+            const narrs = await nResp.json();
+            narrative.value = narrs.length > 0 ? narrs[0] : null;
+          }
+
+          loadingForecast.value = false;
+          await nextTick();
+          renderChart();
+        } catch (e) {
+          console.error(e);
+          forecastError.value = 'Failed to fetch forecast.';
+          loadingForecast.value = false;
+        }
+      }
+
+      function renderChart() {
+        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        if (!forecastCanvas.value || !forecastData.value) return;
+
+        const periods = forecastData.value.periods || [];
+        const labels = periods.map(p => p.period_date);
+        const points = periods.map(p => p.point_value);
+        const upper = periods.map(p => p.upper_bound);
+        const lower = periods.map(p => p.lower_bound);
+
+        chartInstance = new Chart(forecastCanvas.value, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: 'Upper Bound',
+                data: upper,
+                borderColor: 'rgba(100,181,246,0.3)',
+                backgroundColor: 'rgba(100,181,246,0.08)',
+                fill: '+1',
+                pointRadius: 0,
+                borderDash: [4, 4],
+                tension: 0.3,
+              },
+              {
+                label: 'Point Forecast',
+                data: points,
+                borderColor: '#42a5f5',
+                backgroundColor: 'rgba(66,165,245,0.15)',
+                fill: false,
+                pointRadius: 4,
+                pointBackgroundColor: '#42a5f5',
+                tension: 0.3,
+                borderWidth: 2,
+              },
+              {
+                label: 'Lower Bound',
+                data: lower,
+                borderColor: 'rgba(100,181,246,0.3)',
+                backgroundColor: 'transparent',
+                fill: false,
+                pointRadius: 0,
+                borderDash: [4, 4],
+                tension: 0.3,
+              },
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { labels: { color: '#ccc' } },
+              tooltip: { mode: 'index', intersect: false },
+            },
+            scales: {
+              x: { ticks: { color: '#aaa' }, grid: { color: '#333' } },
+              y: { ticks: { color: '#aaa' }, grid: { color: '#333' } }
+            }
+          }
+        });
+      }
+
+      onMounted(fetchIndicatorIds);
+      onBeforeUnmount(() => { if (chartInstance) chartInstance.destroy(); });
+
+      return { indicatorIds, selectedIndicator, loadingIndicators, loadingForecast,
+               forecastData, forecastError, narrative, forecastCanvas,
+               fetchIndicatorIds, onIndicatorChange };
+    }
+  };
+
+  // =====================================================================
+  // 10.2 — What-If View
+  // =====================================================================
+  const WhatIfView = {
+    template: `
+      <div>
+        <v-card class="ma-2" variant="outlined">
+          <v-card-title>
+            <v-icon class="mr-2">mdi-flask</v-icon>
+            What-If Scenario Analysis
+          </v-card-title>
+          <v-card-text>
+            <v-row align="end">
+              <v-col cols="12" md="3">
+                <v-select
+                  v-model="form.indicator_id"
+                  :items="indicatorIds"
+                  label="Indicator"
+                  prepend-inner-icon="mdi-chart-bar"
+                  variant="outlined"
+                  density="comfortable"
+                  :loading="loadingIndicators"
+                ></v-select>
+              </v-col>
+              <v-col cols="12" md="3">
+                <v-text-field
+                  v-model.number="form.shock_magnitude"
+                  label="Shock Magnitude"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  prepend-inner-icon="mdi-lightning-bolt"
+                  variant="outlined"
+                  density="comfortable"
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" md="3">
+                <v-btn-toggle v-model="form.shock_direction" mandatory color="blue" variant="outlined" density="comfortable">
+                  <v-btn value="up">
+                    <v-icon start color="green">mdi-arrow-up-bold</v-icon> Up
+                  </v-btn>
+                  <v-btn value="down">
+                    <v-icon start color="red">mdi-arrow-down-bold</v-icon> Down
+                  </v-btn>
+                </v-btn-toggle>
+              </v-col>
+              <v-col cols="12" md="3">
+                <v-btn color="light-blue" variant="elevated" :loading="submitting" :disabled="!canSubmit"
+                       @click="runWhatIf" block>
+                  <v-icon start>mdi-play</v-icon>
+                  Run Scenario
+                </v-btn>
+              </v-col>
+            </v-row>
+
+            <v-progress-linear v-if="submitting" indeterminate color="blue" class="mb-4"></v-progress-linear>
+
+            <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
+
+            <!-- Chart: baseline + what-if overlay -->
+            <div v-if="whatifResult" class="mt-4">
+              <div style="position:relative; height:350px;">
+                <canvas ref="whatifCanvas"></canvas>
+              </div>
+
+              <!-- Scenario Narrative -->
+              <v-card v-if="whatifNarrative" variant="tonal" color="orange-darken-4" class="mt-4 pa-3">
+                <div class="text-subtitle-2 mb-1">
+                  <v-icon size="small" class="mr-1">mdi-flask</v-icon>
+                  Hypothetical Scenario Narrative
+                  <v-chip size="x-small" color="orange" class="ml-2" label>What-If</v-chip>
+                </div>
+                <div class="text-body-2">{{ whatifNarrative.narrative_text }}</div>
+                <div v-if="whatifNarrative.evidence_links && whatifNarrative.evidence_links.length" class="mt-2">
+                  <v-chip v-for="(link, i) in whatifNarrative.evidence_links" :key="i"
+                          size="x-small" variant="outlined" color="orange" class="mr-1">
+                    {{ link.source }}:{{ link.series_id }} {{ link.date }}
+                  </v-chip>
+                </div>
+              </v-card>
+            </div>
+          </v-card-text>
+        </v-card>
+      </div>
+    `,
+    setup() {
+      const indicatorIds = ref([]);
+      const loadingIndicators = ref(false);
+      const form = reactive({ indicator_id: null, shock_magnitude: 1.0, shock_direction: 'up' });
+      const submitting = ref(false);
+      const error = ref('');
+      const whatifResult = ref(null);
+      const whatifNarrative = ref(null);
+      const baselinePeriods = ref([]);
+      const whatifCanvas = ref(null);
+      let chartInstance = null;
+
+      const canSubmit = computed(() => form.indicator_id && form.shock_magnitude > 0);
+
+      async function fetchIndicatorIds() {
+        loadingIndicators.value = true;
+        try {
+          const resp = await fetch('/api/indicators');
+          const data = await resp.json();
+          indicatorIds.value = data.map(d => d.series_id);
+        } catch (e) { console.error(e); }
+        loadingIndicators.value = false;
+      }
+
+      async function runWhatIf() {
+        error.value = '';
+        whatifResult.value = null;
+        whatifNarrative.value = null;
+        submitting.value = true;
+
+        try {
+          // Fetch baseline forecast first
+          const baseResp = await fetch('/api/forecast/' + encodeURIComponent(form.indicator_id));
+          if (baseResp.ok) {
+            const baseData = await baseResp.json();
+            baselinePeriods.value = baseData.periods || [];
+          } else {
+            baselinePeriods.value = [];
+          }
+
+          // Run what-if
+          const resp = await fetch('/api/whatif', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              indicator_id: form.indicator_id,
+              shock_magnitude: form.shock_magnitude,
+              shock_direction: form.shock_direction,
+            }),
+          });
+
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            error.value = err.detail || 'What-if computation failed.';
+            submitting.value = false;
+            return;
+          }
+
+          const data = await resp.json();
+          whatifResult.value = data.forecast;
+          whatifNarrative.value = data.narrative;
+
+          submitting.value = false;
+          await nextTick();
+          renderChart();
+        } catch (e) {
+          console.error(e);
+          error.value = 'Request failed.';
+          submitting.value = false;
+        }
+      }
+
+      function renderChart() {
+        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        if (!whatifCanvas.value || !whatifResult.value) return;
+
+        const scenarioPeriods = whatifResult.value.periods || [];
+        const labels = scenarioPeriods.map(p => p.period_date);
+        const scenarioPoints = scenarioPeriods.map(p => p.point_value);
+        const basePoints = baselinePeriods.value.map(p => p.point_value);
+
+        const datasets = [];
+
+        if (basePoints.length > 0) {
+          datasets.push({
+            label: 'Baseline Forecast',
+            data: basePoints,
+            borderColor: '#78909c',
+            backgroundColor: 'rgba(120,144,156,0.1)',
+            fill: false,
+            pointRadius: 3,
+            tension: 0.3,
+            borderWidth: 2,
+            borderDash: [6, 3],
+          });
+        }
+
+        datasets.push({
+          label: 'What-If Scenario',
+          data: scenarioPoints,
+          borderColor: '#ff9800',
+          backgroundColor: 'rgba(255,152,0,0.15)',
+          fill: false,
+          pointRadius: 4,
+          pointBackgroundColor: '#ff9800',
+          tension: 0.3,
+          borderWidth: 2,
+        });
+
+        chartInstance = new Chart(whatifCanvas.value, {
+          type: 'line',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { labels: { color: '#ccc' } },
+              tooltip: { mode: 'index', intersect: false },
+            },
+            scales: {
+              x: { ticks: { color: '#aaa' }, grid: { color: '#333' } },
+              y: { ticks: { color: '#aaa' }, grid: { color: '#333' } }
+            }
+          }
+        });
+      }
+
+      onMounted(fetchIndicatorIds);
+      onBeforeUnmount(() => { if (chartInstance) chartInstance.destroy(); });
+
+      return { indicatorIds, loadingIndicators, form, submitting, error, canSubmit,
+               whatifResult, whatifNarrative, whatifCanvas, runWhatIf };
+    }
+  };
+
+  // =====================================================================
+  // 10.3 — About View
+  // =====================================================================
+  const AboutView = {
+    template: `
+      <div>
+        <v-card class="ma-2" variant="outlined">
+          <v-card-title>
+            <v-icon class="mr-2">mdi-information</v-icon>
+            About Semantic Delta
+          </v-card-title>
+          <v-card-text>
+            <!-- Intro / Demo Speech -->
+            <div class="text-h6 mb-2">What is Semantic Delta?</div>
+            <p class="text-body-1 mb-4">
+              Semantic Delta is an economic forecasting tool that goes beyond raw numbers.
+              When government agencies like the Bureau of Economic Analysis (BEA) or the Federal Reserve (FRED)
+              release updated economic data, the numbers often change from previous estimates — these are called
+              <strong>data revisions</strong>. Most tools ignore these revisions. Semantic Delta captures them,
+              computes structured "deltas" describing <em>what</em> changed, <em>by how much</em>, and <em>why</em>,
+              then automatically updates short-term forecasts and generates plain-language narratives with
+              inline citations back to the source data.
+            </p>
+            <p class="text-body-1 mb-4">
+              The result is a transparent, evidence-linked forecasting system where every prediction
+              can be traced back to the specific data revision that triggered it. No black boxes —
+              just structured reasoning from data to forecast to narrative.
+            </p>
+
+            <v-divider class="my-6"></v-divider>
+
+            <!-- User Guide -->
+            <div class="text-h6 mb-3">User Guide</div>
+
+            <v-timeline side="end" density="compact">
+              <v-timeline-item dot-color="light-blue" size="small" icon="mdi-play-circle">
+                <div class="text-subtitle-1 font-weight-bold">1. Run the Pipeline</div>
+                <div class="text-body-2 mt-1">
+                  Click the <strong>Run Pipeline</strong> button in the top app bar. This triggers the full
+                  data pipeline: ingesting the latest data from FRED and BEA, computing semantic deltas
+                  between data vintages, generating forecasts, and producing narratives. A snackbar will
+                  show the results summary.
+                </div>
+              </v-timeline-item>
+
+              <v-timeline-item dot-color="green" size="small" icon="mdi-chart-bar">
+                <div class="text-subtitle-1 font-weight-bold">2. View Indicators</div>
+                <div class="text-body-2 mt-1">
+                  Navigate to the <strong>Indicators</strong> page (home). You'll see a table of all
+                  economic indicators with their latest values, dates, and trend direction. Click any
+                  row to see a detail chart with forecast data.
+                </div>
+              </v-timeline-item>
+
+              <v-timeline-item dot-color="orange" size="small" icon="mdi-swap-vertical">
+                <div class="text-subtitle-1 font-weight-bold">3. Browse Deltas</div>
+                <div class="text-body-2 mt-1">
+                  Go to the <strong>Deltas</strong> page to see all computed semantic deltas in
+                  chronological order. Each delta shows the indicator, magnitude, direction, and a
+                  summary of the driver explanation. Click to expand and see the full explanation,
+                  evidence links, and any associated narrative.
+                </div>
+              </v-timeline-item>
+
+              <v-timeline-item dot-color="blue" size="small" icon="mdi-chart-timeline-variant">
+                <div class="text-subtitle-1 font-weight-bold">4. View Forecasts</div>
+                <div class="text-body-2 mt-1">
+                  On the <strong>Forecasts</strong> page, select an indicator from the dropdown.
+                  The chart displays the point forecast with upper and lower uncertainty bounds
+                  (shaded area). Below the chart, you'll find the narrative explaining the most
+                  recent forecast update.
+                </div>
+              </v-timeline-item>
+
+              <v-timeline-item dot-color="purple" size="small" icon="mdi-flask">
+                <div class="text-subtitle-1 font-weight-bold">5. Run What-If Scenarios</div>
+                <div class="text-body-2 mt-1">
+                  The <strong>What-If</strong> page lets you explore hypothetical scenarios. Select an
+                  indicator, set a shock magnitude and direction (up or down), then click
+                  <strong>Run Scenario</strong>. The chart overlays the scenario forecast on the
+                  baseline, and a narrative explains the hypothetical impact. These scenarios are
+                  ephemeral — they don't affect your actual forecasts.
+                </div>
+              </v-timeline-item>
+            </v-timeline>
+
+            <v-divider class="my-6"></v-divider>
+
+            <v-row>
+              <v-col cols="12" md="6">
+                <v-card variant="tonal" color="blue-grey-darken-3" class="pa-3">
+                  <div class="text-subtitle-2 mb-1">Tech Stack</div>
+                  <v-chip size="small" class="mr-1 mb-1" v-for="t in techStack" :key="t">{{ t }}</v-chip>
+                </v-card>
+              </v-col>
+              <v-col cols="12" md="6">
+                <v-card variant="tonal" color="blue-grey-darken-3" class="pa-3">
+                  <div class="text-subtitle-2 mb-1">Data Sources</div>
+                  <div class="text-body-2">
+                    <strong>FRED</strong>: GDP, CPI, PCE, Unemployment Rate<br/>
+                    <strong>BEA</strong>: NIPA Table 1.1.1 (GDP Components)
+                  </div>
+                </v-card>
+              </v-col>
+            </v-row>
+          </v-card-text>
+        </v-card>
+      </div>
+    `,
+    setup() {
+      const techStack = ['Python', 'FastAPI', 'Vue 3', 'Vuetify 3', 'Chart.js', 'SQLite', 'AWS Bedrock (Claude)', 'Holt-Winters ETS'];
+      return { techStack };
+    }
+  };
+
+  // =====================================================================
+  // Router
+  // =====================================================================
+  const routes = [
+    { path: '/', component: IndicatorsView },
+    { path: '/deltas', component: DeltasView },
+    { path: '/forecasts', component: ForecastsView },
+    { path: '/whatif', component: WhatIfView },
+    { path: '/about', component: AboutView },
+  ];
+
+  const router = createRouter({
+    history: createWebHashHistory(),
+    routes,
+  });
+
+  // =====================================================================
+  // Vuetify (dark theme)
+  // =====================================================================
+  const vuetify = createVuetify({
+    theme: {
+      defaultTheme: 'dark',
+    },
+  });
+
+  // =====================================================================
+  // App
+  // =====================================================================
+  const app = createApp({
+    setup() {
+      const drawer = ref(true);
+      const pipelineRunning = ref(false);
+      const snackbar = reactive({ show: false, text: '', color: 'success' });
+
+      const navLinks = [
+        { path: '/', label: 'Indicators', icon: 'mdi-chart-bar' },
+        { path: '/deltas', label: 'Deltas', icon: 'mdi-swap-vertical' },
+        { path: '/forecasts', label: 'Forecasts', icon: 'mdi-chart-timeline-variant' },
+        { path: '/whatif', label: 'What-If', icon: 'mdi-flask' },
+        { path: '/about', label: 'About', icon: 'mdi-information' },
+      ];
+
+      async function runPipeline() {
+        pipelineRunning.value = true;
+        try {
+          const resp = await fetch('/api/pipeline', { method: 'POST' });
+          const data = await resp.json();
+          if (resp.ok) {
+            const msg = 'Pipeline complete: ' +
+              (data.ingest ? data.ingest.total_success + ' ingested' : '0 ingested') +
+              ', ' + (data.deltas_computed || 0) + ' deltas' +
+              ', ' + (data.forecasts_generated || 0) + ' forecasts' +
+              ', ' + (data.narratives_generated || 0) + ' narratives';
+            snackbar.text = msg;
+            snackbar.color = 'success';
+          } else {
+            snackbar.text = 'Pipeline error: ' + (data.detail || JSON.stringify(data));
+            snackbar.color = 'error';
+          }
+        } catch (e) {
+          snackbar.text = 'Pipeline request failed: ' + e.message;
+          snackbar.color = 'error';
+        }
+        snackbar.show = true;
+        pipelineRunning.value = false;
+      }
+
+      return { drawer, pipelineRunning, snackbar, navLinks, runPipeline };
+    }
+  });
+
+  app.use(router);
+  app.use(vuetify);
+  app.mount('#app');
+  </script>
+</body>
+</html>

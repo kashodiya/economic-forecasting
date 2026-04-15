@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+aiosqlite
+httpx
+boto3
+statsmodels
+numpy
+python-dateutil
+jinja2
+python-dotenv
+pytest
+pytest-asyncio
+hypothesis
